@@ -58,6 +58,67 @@ async fn main() {
                                 match manifest {
                                     Ok(manifest) => {
                                         println!("OK Manifest for {} - {}", asset.title, version.artifact_id);
+                                        println!("Full Manifest for {:?}", asset);
+                                        /*
+                                            Example manifest:
+                                            Full Manifest for FabAsset
+                                            {
+                                                asset_id: "28b7df0e7f5e4202be89a20d362860c3",
+                                                asset_namespace: "89efe5924d3d467c839449ab6ab52e7f",
+                                                categories: [
+                                                    Category { id: "ad152ac0-0e9c-4233-9a5c-f29050798a38", name: Some("Containers") }
+                                                ],
+                                                custom_attributes: [
+                                                    {"ListingIdentifier": "b5603e44-e1b0-4346-9c3d-04887aa9f87d"}
+                                                ],
+                                                description: "Industry Props Pack 6",
+                                                distribution_method: "ASSET_PACK",
+                                                images: [
+                                                    Image {
+                                                        height: "349",
+                                                        md5: None,
+                                                        type_field: "Featured",
+                                                        uploaded_date: "2024-12-06T09:49:02.319407Z",
+                                                        url: "https://media.fab.com/image_previews/gallery_images/f0b6dd69-3768-4763-8f65-b33fb1f4c3c3/bb63531b-e5b9-4454-99ea-3fdb17892cb0.jpg",
+                                                        width: "640"
+                                                    }
+                                                ], legacy_item_id: Some("f4a3f3ff297f43ac92e0dda0b5bc351e"),
+                                                project_versions: [
+                                                    ProjectVersion {
+                                                        artifact_id: "Industryf4a3f3ff297fV1",
+                                                        build_versions: [
+                                                            BuildVersion {
+                                                                build_version: "5.6.0-40032047+++UE5+Dev-Marketplace-Windows",
+                                                                platform: "Windows"
+                                                            }
+                                                        ],
+                                                        engine_versions: [
+                                                            "UE_4.18",
+                                                            "UE_4.19",
+                                                            "UE_4.20",
+                                                            "UE_4.21",
+                                                            "UE_4.22",
+                                                            "UE_4.23",
+                                                            "UE_4.24",
+                                                            "UE_4.25",
+                                                            "UE_4.26",
+                                                            "UE_4.27",
+                                                            "UE_5.0",
+                                                            "UE_5.1",
+                                                            "UE_5.2",
+                                                            "UE_5.3",
+                                                            "UE_5.4",
+                                                            "UE_5.5",
+                                                            "UE_5.6"
+                                                        ],
+                                                        target_platforms: ["Windows"]
+                                                    }
+                                                ],
+                                                source: "fab",
+                                                title: "Industry Props Pack 6",
+                                                url: "https://www.fab.com/listings/b5603e44-e1b0-4346-9c3d-04887aa9f87d"
+                                            }
+                                        */
                                         break;
                                     }
                                     Err(e) => {
