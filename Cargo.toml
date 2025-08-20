@@ -1,0 +1,10 @@
+[package]
+name = "egs_client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = "1.47.1"
+env_logger = "0.11.8"
+egs-api = { git = "https://github.com/Catley94/egs-api-rs", branch = "fab" }
+webbrowser = "1.0.5"
