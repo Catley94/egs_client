@@ -1,11 +1,7 @@
 use std::time::Duration;
-use actix_web::{main, get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, HttpResponse};
 use colored::Colorize;
 use egs_api::api::error::EpicAPIError;
-use egs_api::api::types::account::{AccountData, AccountInfo};
-use egs_api::api::types::fab_library::FabLibrary;
-use egs_api::EpicGames;
-use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use crate::utils;
 

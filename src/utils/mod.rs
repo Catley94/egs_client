@@ -30,7 +30,7 @@ pub async fn get_account_details(epic_games_services: &mut EpicGames) -> Option<
     epic_games_services.account_details().await
 }
 
-pub async fn get_account_info(mut epic_games_services: &mut EpicGames) -> Option<Vec<AccountInfo>> {
+pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec<AccountInfo>> {
     // TODO What's the difference between this and get_account_details?
     epic_games_services
         .account_ids_details(vec![epic_games_services.user_details().account_id.unwrap_or_default()])

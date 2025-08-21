@@ -1,13 +1,7 @@
 mod api;
 mod utils;
 
-use egs_api::EpicGames;
-use std::io::{self};
-use std::time::Duration;
 use actix_web::{App, HttpServer};
-use egs_api::api::error::EpicAPIError;
-use tokio::time::sleep;
-use colored::*;
 
 
 
@@ -20,7 +14,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::get_fab_list)
             .service(api::refresh_fab_list)
     })
-        .bind(("127.0.0.1:8080"))?
+        .bind("127.0.0.1:8080")?
         .run()
         .await
 
