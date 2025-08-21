@@ -6,8 +6,6 @@ use std::time::Duration;
 use egs_api::api::error::EpicAPIError;
 use tokio::time::sleep;
 use colored::*;
-// Create/open a text file for writing
-use std::fs::File;
 
 const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
 
@@ -80,7 +78,7 @@ async fn main() {
                                         println!("_________________________________________FULL_MANIFEST___________________________________________________________");
                                         println!("Full Manifest for {:?}", manifest);
                                         println!("_________________________________________________________________________________________________________________");
-                                        
+
                                         /*
                                             Example manifest:
                                             Full Manifest for FabAsset
