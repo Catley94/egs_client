@@ -33,7 +33,7 @@ async fn main() {
         .await;
     println!("Account info: {:?}", info);
     let friends = egs.account_friends(true).await;
-    println!("Friends: {:?}", friends);
+    // println!("Friends: {:?}", friends);
     match details {
         None => {
             println!("No details found");
@@ -46,7 +46,7 @@ async fn main() {
                 }
                 Some(ass) => {
                     println!("Library items: {:?}", ass.results.len());
-                    for asset in ass.results.iter() {
+                    for (index, asset) in ass.results.iter().enumerate() {
                         for version in asset.project_versions.iter() {
                             loop {
                                 let manifest = egs.fab_asset_manifest(
@@ -57,8 +57,13 @@ async fn main() {
                                 ).await;
                                 match manifest {
                                     Ok(manifest) => {
-                                        println!("OK Manifest for {} - {}", asset.title, version.artifact_id);
+                                        println!("_______________________________________ITEM_{}__________________________________________________________________", index);
+                                        println!("OK Manifest for {} - {} - {}", asset.title, version.artifact_id, asset.source);
+                                        println!("______________________________________FULL_ASSET_________________________________________________________________");
                                         println!("Full Manifest for {:?}", asset);
+                                        println!("_________________________________________FULL_MANIFEST___________________________________________________________");
+                                        println!("Full Manifest for {:?}", manifest);
+                                        println!("_________________________________________________________________________________________________________________");
                                         /*
                                             Example manifest:
                                             Full Manifest for FabAsset
