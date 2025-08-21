@@ -60,10 +60,6 @@ async fn main() {
                 Some(ass) => {
                     println!("Library items: {:?}", ass.results.len());
 
-
-
-                    let mut file = File::create("assets_reference.txt").expect("Could not create file");
-
                     for (index, asset) in ass.results.iter().enumerate() {
 
 
@@ -84,17 +80,7 @@ async fn main() {
                                         println!("_________________________________________FULL_MANIFEST___________________________________________________________");
                                         println!("Full Manifest for {:?}", manifest);
                                         println!("_________________________________________________________________________________________________________________");
-
-                                        // Write asset info to file
-                                        // writeln!(file, "=== Asset {} ===", index + 1).expect("Could not write to file");
-                                        // writeln!(file, "Title: {}", asset.title).expect("Could not write to file");
-                                        // writeln!(file, "Asset ID: {}", asset.asset_id).expect("Could not write to file");
-                                        // writeln!(file, "Asset Namespace: {}", asset.asset_namespace).expect("Could not write to file");
-                                        // writeln!(file, "Description: {}", asset.description).expect("Could not write to file");
-                                        // writeln!(file, "Full Asset Data: {:?}", asset).expect("Could not write to file");
-                                        // writeln!(file, "Full Manifest Data: {:?}", manifest).expect("Could not write to file");
-                                        // writeln!(file, "").expect("Could not write to file"); // Empty line for separation
-
+                                        
                                         /*
                                             Example manifest:
                                             Full Manifest for FabAsset
@@ -310,7 +296,7 @@ async fn main() {
     // let download_manifest = egs.asset_download_manifests(manifest.unwrap()).await;
 }
 
-fn get_auth_code() -> (String) {
+fn get_auth_code() -> String {
     let mut auth_code = String::new();
     let stdin = io::stdin(); // We get `Stdin` here.
     stdin.read_line(&mut auth_code).unwrap();
