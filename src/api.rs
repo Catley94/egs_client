@@ -15,8 +15,8 @@ async fn get_fab_list() -> HttpResponse {
     // If cached, return cached list
     // If not cached, refresh list and cache it - refresh_fab_list()
 
-    
-    
+    // handle_refresh_fab_list().await
+
     HttpResponse::Ok().finish()
 }
 
@@ -24,6 +24,12 @@ async fn get_fab_list() -> HttpResponse {
 async fn refresh_fab_list() -> HttpResponse {
     // Respond with the list of Fab Assets and cache it
 
+    handle_refresh_fab_list().await
+
+    // HttpResponse::Ok().finish()
+}
+
+async fn handle_refresh_fab_list() -> HttpResponse {
     // 1. Open the Web Browser for the user to get the authentication code
     // 2. Get auth code from user via CLI
     // TODO: Can I automate this process?
