@@ -1,3 +1,5 @@
+mod api;
+
 use egs_api::EpicGames;
 use std::io::{self};
 use std::time::Duration;
