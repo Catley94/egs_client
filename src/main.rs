@@ -1,55 +1,75 @@
-use std::collections::{HashMap, HashSet};
+mod api;
+
 use egs_api::EpicGames;
 use std::io::{self};
 use std::time::Duration;
 use egs_api::api::error::EpicAPIError;
-use egs_api::api::types::epic_asset::EpicAsset;
 use tokio::time::sleep;
+use colored::*;
+// Create/open a text file for writing
+use std::fs::File;
+
+const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    if webbrowser::open("https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode").is_err() {
-        println!("Please go to https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode")
+
+    // 1.  the Web Browser for the user to get the authentication code
+    // TODO: Can I automate this process?
+    if webbrowser::open(EPIC_LOGIN_URL).is_err() {
+        println!("Please go to {}", EPIC_LOGIN_URL)
     }
     println!("Please enter the 'authorizationCode' value from the JSON response");
-    let mut sid = String::new();
-    let stdin = io::stdin(); // We get `Stdin` here.
-    stdin.read_line(&mut sid).unwrap();
-    sid = sid.trim().to_string();
-    sid = sid.replace(|c: char| c == '"', "");
-    let mut egs = EpicGames::new();
-    println!("Using Auth Code: {}", sid);
 
-    if egs.auth_code(None, Some(sid)).await {
+    // 2. Get auth code from user via CLI
+    // TODO: Can I automate this process?
+    let auth_code = get_auth_code();
+
+    // 3. Create EpicGames object and login to Epic's Servers
+    let mut epic_games_services = EpicGames::new();
+    if epic_games_services.auth_code(None, Some(auth_code)).await {
         println!("Logged in");
     }
+    epic_games_services.login().await;
 
-    egs.login().await;
-    let details = egs.account_details().await;
+    // 4. Get account details
+    let details = epic_games_services.account_details().await;
     println!("Account details: {:?}", details);
-    let info = egs
-        .account_ids_details(vec![egs.user_details().account_id.unwrap_or_default()])
+
+    // 5. Get account details
+    let info = epic_games_services
+        .account_ids_details(vec![epic_games_services.user_details().account_id.unwrap_or_default()])
         .await;
     println!("Account info: {:?}", info);
-    let friends = egs.account_friends(true).await;
+
+    // let friends = egs.account_friends(true).await;
     // println!("Friends: {:?}", friends);
+
+    // 6. Get library items
     match details {
         None => {
             println!("No details found");
         }
         Some(info) => {
-            let assets = egs.fab_library_items(info.id).await;
+            let assets = epic_games_services.fab_library_items(info.id).await;
             match assets {
                 None => {
                     println!("No assets found");
                 }
                 Some(ass) => {
                     println!("Library items: {:?}", ass.results.len());
+
+
+
+                    let mut file = File::create("assets_reference.txt").expect("Could not create file");
+
                     for (index, asset) in ass.results.iter().enumerate() {
+
+
                         for version in asset.project_versions.iter() {
                             loop {
-                                let manifest = egs.fab_asset_manifest(
+                                let manifest = epic_games_services.fab_asset_manifest(
                                     &version.artifact_id,
                                     &asset.asset_namespace,
                                     &asset.asset_id,
@@ -57,13 +77,24 @@ async fn main() {
                                 ).await;
                                 match manifest {
                                     Ok(manifest) => {
-                                        println!("_______________________________________ITEM_{}__________________________________________________________________", index);
+                                        println!("{}", format!("                                       ITEM_{}                                                     ", index).black().on_bright_cyan().bold());
                                         println!("OK Manifest for {} - {} - {}", asset.title, version.artifact_id, asset.source);
                                         println!("______________________________________FULL_ASSET_________________________________________________________________");
                                         println!("Full Manifest for {:?}", asset);
                                         println!("_________________________________________FULL_MANIFEST___________________________________________________________");
                                         println!("Full Manifest for {:?}", manifest);
                                         println!("_________________________________________________________________________________________________________________");
+
+                                        // Write asset info to file
+                                        // writeln!(file, "=== Asset {} ===", index + 1).expect("Could not write to file");
+                                        // writeln!(file, "Title: {}", asset.title).expect("Could not write to file");
+                                        // writeln!(file, "Asset ID: {}", asset.asset_id).expect("Could not write to file");
+                                        // writeln!(file, "Asset Namespace: {}", asset.asset_namespace).expect("Could not write to file");
+                                        // writeln!(file, "Description: {}", asset.description).expect("Could not write to file");
+                                        // writeln!(file, "Full Asset Data: {:?}", asset).expect("Could not write to file");
+                                        // writeln!(file, "Full Manifest Data: {:?}", manifest).expect("Could not write to file");
+                                        // writeln!(file, "").expect("Could not write to file"); // Empty line for separation
+
                                         /*
                                             Example manifest:
                                             Full Manifest for FabAsset
@@ -277,4 +308,14 @@ async fn main() {
     // println!("{:?}", manifest);
     //
     // let download_manifest = egs.asset_download_manifests(manifest.unwrap()).await;
+}
+
+fn get_auth_code() -> (String) {
+    let mut auth_code = String::new();
+    let stdin = io::stdin(); // We get `Stdin` here.
+    stdin.read_line(&mut auth_code).unwrap();
+    auth_code = auth_code.trim().to_string();
+    auth_code = auth_code.replace(|c: char| c == '"', "");
+    println!("Using Auth Code: {}", auth_code);
+    auth_code
 }
