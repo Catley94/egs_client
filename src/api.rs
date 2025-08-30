@@ -12,27 +12,43 @@ use egs_api::api::types::download_manifest::DownloadManifest;
 fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Result<(), anyhow::Error> {
     use egs_api::api::types::chunk::Chunk;
     use sha1::{Digest, Sha1};
+    use std::io::{self, Write};
 
     // Create base output dirs
     std::fs::create_dir_all(out_root)?;
     let temp_dir = out_root.parent().map(|p| p.join("temp")).unwrap_or_else(|| out_root.join("temp"));
     std::fs::create_dir_all(&temp_dir)?;
 
-    for file in &dm.file_manifest_list {
+    let files: Vec<_> = dm.files().into_iter().collect();
+    let total_files = files.len();
+
+    for (file_idx, (filename, file)) in files.into_iter().enumerate() {
+        let file_no = file_idx + 1;
+        println!("Downloading file {}/{}: {}", file_no, total_files, filename);
+        io::stdout().flush().ok();
+
         // Prepare final output path under .../data/<filename>, similar to EAM
         let mut out_path = out_root.to_path_buf();
         if out_path.file_name().map_or(false, |n| n == "data") == false {
             // ensure we have .../data like EAM layout
             out_path = out_path.join("data");
         }
-        let out_path = out_path.join(&file.filename);
+        let out_path = out_path.join(&filename);
         if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent)?; }
 
         // 1) Ensure all required chunks are downloaded to temp as <guid>.chunk using signed links
-        for part in &file.file_chunk_parts {
+        let total_chunks = file.file_chunk_parts.len();
+        for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
             let guid = &part.guid;
             let chunk_path = temp_dir.join(format!("{}.chunk", guid));
-            if chunk_path.exists() { continue; }
+            if chunk_path.exists() {
+                print!("\r  chunks: {}/{} ({}%) - using cached chunk", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+                io::stdout().flush().ok();
+                continue;
+            }
+            print!("\r  chunks: {}/{} ({}%) - downloading...", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+            io::stdout().flush().ok();
+
             let link = part.link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
             let url = link.to_string();
             let mut resp = reqwest::blocking::get(url);
@@ -46,28 +62,36 @@ fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Re
             std::fs::create_dir_all(chunk_path.parent().unwrap())?;
             std::fs::write(&chunk_path, &bytes)?;
         }
+        println!("\r  chunks: {}/{} (100%) - done", total_chunks, total_chunks);
 
         // 2) Reconstruct final file by reading each chunk and copying the slice [offset, offset+size)
         let mut out = std::fs::File::create(&out_path)?;
         let mut hasher = Sha1::new();
-        for part in &file.file_chunk_parts {
+        for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
             let guid = &part.guid;
             let chunk_path = temp_dir.join(format!("{}.chunk", guid));
             let chunk_bytes = std::fs::read(&chunk_path)?;
             let chunk = Chunk::from_vec(chunk_bytes).ok_or_else(|| anyhow::anyhow!("failed to parse chunk {}", guid))?;
             let start = part.offset as usize;
             let end = (part.offset + part.size) as usize;
-            if end > chunk.data.len() { return Err(anyhow::anyhow!("chunk too small for {} [{}..{} > {}]", file.filename, start, end, chunk.data.len())); }
+            if end > chunk.data.len() { return Err(anyhow::anyhow!("chunk too small for {} [{}..{} > {}]", filename, start, end, chunk.data.len())); }
             let slice = &chunk.data[start..end];
             std::io::Write::write_all(&mut out, slice)?;
             hasher.update(slice);
+
+            // assembly progress
+            let total_chunks = file.file_chunk_parts.len();
+            print!("\r  assembling: {}/{} ({}%)", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+            io::stdout().flush().ok();
         }
+        println!("\r  assembling: {}/{} (100%) - done", file.file_chunk_parts.len(), file.file_chunk_parts.len());
+
         // Optional: verify file hash if provided (DownloadManifest uses sha1 hex)
         if !file.file_hash.is_empty() {
             let got = hasher.finalize();
             let got_hex = got.iter().map(|b| format!("{:02x}", b)).collect::<String>();
             if got_hex != file.file_hash {
-                eprintln!("Warning: SHA1 mismatch for {} (expected {}, got {})", file.filename, file.file_hash, got_hex);
+                eprintln!("Warning: SHA1 mismatch for {} (expected {}, got {})", filename, file.file_hash, got_hex);
             }
         }
     }
