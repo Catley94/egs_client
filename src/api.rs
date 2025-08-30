@@ -4,9 +4,79 @@ use colored::Colorize;
 use egs_api::api::error::EpicAPIError;
 use tokio::time::sleep;
 use crate::utils;
+// Rust-like outline
+use std::path::Path;
+
+use egs_api::api::types::download_manifest::DownloadManifest;
+
+fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Result<(), anyhow::Error> {
+    use egs_api::api::types::chunk::Chunk;
+    use sha1::{Digest, Sha1};
+
+    // Create base output dirs
+    std::fs::create_dir_all(out_root)?;
+    let temp_dir = out_root.parent().map(|p| p.join("temp")).unwrap_or_else(|| out_root.join("temp"));
+    std::fs::create_dir_all(&temp_dir)?;
+
+    for file in &dm.file_manifest_list {
+        // Prepare final output path under .../data/<filename>, similar to EAM
+        let mut out_path = out_root.to_path_buf();
+        if out_path.file_name().map_or(false, |n| n == "data") == false {
+            // ensure we have .../data like EAM layout
+            out_path = out_path.join("data");
+        }
+        let out_path = out_path.join(&file.filename);
+        if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent)?; }
+
+        // 1) Ensure all required chunks are downloaded to temp as <guid>.chunk using signed links
+        for part in &file.file_chunk_parts {
+            let guid = &part.guid;
+            let chunk_path = temp_dir.join(format!("{}.chunk", guid));
+            if chunk_path.exists() { continue; }
+            let link = part.link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
+            let url = link.to_string();
+            let mut resp = reqwest::blocking::get(url);
+            // Simple retry once if transient error
+            if resp.is_err() { resp = reqwest::blocking::get(link.clone()); }
+            let mut resp = resp.map_err(|e| anyhow::anyhow!("chunk request failed for {}: {}", guid, e))?;
+            if !resp.status().is_success() {
+                return Err(anyhow::anyhow!("chunk HTTP {} for {}", resp.status(), guid));
+            }
+            let bytes = resp.bytes().map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
+            std::fs::create_dir_all(chunk_path.parent().unwrap())?;
+            std::fs::write(&chunk_path, &bytes)?;
+        }
+
+        // 2) Reconstruct final file by reading each chunk and copying the slice [offset, offset+size)
+        let mut out = std::fs::File::create(&out_path)?;
+        let mut hasher = Sha1::new();
+        for part in &file.file_chunk_parts {
+            let guid = &part.guid;
+            let chunk_path = temp_dir.join(format!("{}.chunk", guid));
+            let chunk_bytes = std::fs::read(&chunk_path)?;
+            let chunk = Chunk::from_vec(chunk_bytes).ok_or_else(|| anyhow::anyhow!("failed to parse chunk {}", guid))?;
+            let start = part.offset as usize;
+            let end = (part.offset + part.size) as usize;
+            if end > chunk.data.len() { return Err(anyhow::anyhow!("chunk too small for {} [{}..{} > {}]", file.filename, start, end, chunk.data.len())); }
+            let slice = &chunk.data[start..end];
+            std::io::Write::write_all(&mut out, slice)?;
+            hasher.update(slice);
+        }
+        // Optional: verify file hash if provided (DownloadManifest uses sha1 hex)
+        if !file.file_hash.is_empty() {
+            let got = hasher.finalize();
+            let got_hex = got.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+            if got_hex != file.file_hash {
+                eprintln!("Warning: SHA1 mismatch for {} (expected {}, got {})", file.filename, file.file_hash, got_hex);
+            }
+        }
+    }
+
+    Ok(())
+}
 
 #[get("/get-fab-list")]
-async fn get_fab_list() -> HttpResponse {
+pub async fn get_fab_list() -> HttpResponse {
     // Respond with the list of Fab Assets
     // If cached, return cached list
     // If not cached, refresh list and cache it - refresh_fab_list()
@@ -17,26 +87,36 @@ async fn get_fab_list() -> HttpResponse {
 }
 
 #[get("/refresh-fab-list")]
-async fn refresh_fab_list() -> HttpResponse {
+pub async fn refresh_fab_list() -> HttpResponse {
     // Respond with the list of Fab Assets and cache it
 
     handle_refresh_fab_list().await
-
-    // HttpResponse::Ok().finish()
 }
 
-async fn handle_refresh_fab_list() -> HttpResponse {
-    // 1. Open the Web Browser for the user to get the authentication code
-    // 2. Get auth code from user via CLI
-    // TODO: Can I automate this process?
-    let auth_code = utils::get_auth_code();
-
-    // 3. Create EpicGames object and login to Epic's Servers
+pub async fn handle_refresh_fab_list() -> HttpResponse {
+    // Try to use cached refresh token first (no browser, no copy-paste)
     let mut epic_games_services = utils::create_epic_games_services();
-    if epic_games_services.auth_code(None, Some(auth_code)).await {
-        println!("Logged in");
+    if !utils::try_cached_login(&mut epic_games_services).await {
+        // Fallback to manual auth code flow
+        // 1. Open the Web Browser for the user to get the authentication code
+        // 2. Get auth code from user via CLI
+        let auth_code = utils::get_auth_code();
+
+        // 3. Authenticate with Epic's Servers using the code
+        if epic_games_services.auth_code(None, Some(auth_code)).await {
+            println!("Logged in with provided auth code");
+        }
+        // Complete login; Epic SDK should fill user_details with tokens
+        let _ = epic_games_services.login().await;
+
+        // Persist tokens for next runs
+        let ud = epic_games_services.user_details();
+        if let Err(e) = utils::save_user_details(&ud) {
+            eprintln!("Warning: failed to save tokens: {}", e);
+        }
+    } else {
+        println!("Logged in using cached credentials");
     }
-    epic_games_services.login().await;
 
     // 4. Get account details
     let details = utils::get_account_details(&mut epic_games_services).await;
@@ -50,18 +130,22 @@ async fn handle_refresh_fab_list() -> HttpResponse {
     match details {
         None => {
             println!("No details found");
+            HttpResponse::Ok().body("No details found")
         }
         Some(info) => {
             let assets = utils::get_fab_library_items(&mut epic_games_services, info).await;
             match assets {
                 None => {
                     println!("No assets found");
+                    HttpResponse::Ok().body("No assets found")
                 }
                 Some(retrieved_assets) => {
                     println!("Library items length: {:?}", retrieved_assets.results.len());
 
-                    for (index, asset) in retrieved_assets.results.iter().enumerate() {
-
+                    // Only process the first asset as a test
+                    if let Some(asset) = retrieved_assets.results.first() {
+                        println!("{}", format!("                                       PROCESSING_FIRST_ITEM_ONLY                                                     ").black().on_bright_cyan().bold());
+                        
                         for version in asset.project_versions.iter() {
                             loop {
                                 let manifest = epic_games_services.fab_asset_manifest(
@@ -72,75 +156,62 @@ async fn handle_refresh_fab_list() -> HttpResponse {
                                 ).await;
                                 match manifest {
                                     Ok(manifest) => {
-                                        println!("{}", format!("                                       ITEM_{}                                                     ", index).black().on_bright_cyan().bold());
+                                        println!("{}", format!("                                       FIRST_ITEM                                                     ").black().on_bright_cyan().bold());
                                         println!("OK Manifest for {} - {} - {}", asset.title, version.artifact_id, asset.source);
                                         println!("______________________________________FULL_ASSET_________________________________________________________________");
-                                        println!("Full Manifest for {:?}", asset);
+                                        println!("Full Asset: {:?}", asset);
                                         println!("_________________________________________FULL_MANIFEST___________________________________________________________");
-                                        println!("Full Manifest for {:?}", manifest);
+                                        println!("Full Manifest: {:?}", manifest);
                                         println!("_________________________________________________________________________________________________________________");
 
-                                        /*
-                                            Example manifest:
-                                            Full Manifest for FabAsset
-                                            {
-                                                asset_id: "28b7df0e7f5e4202be89a20d362860c3",
-                                                asset_namespace: "89efe5924d3d467c839449ab6ab52e7f",
-                                                categories: [
-                                                    Category { id: "ad152ac0-0e9c-4233-9a5c-f29050798a38", name: Some("Containers") }
-                                                ],
-                                                custom_attributes: [
-                                                    {"ListingIdentifier": "b5603e44-e1b0-4346-9c3d-04887aa9f87d"}
-                                                ],
-                                                description: "Industry Props Pack 6",
-                                                distribution_method: "ASSET_PACK",
-                                                images: [
-                                                    Image {
-                                                        height: "349",
-                                                        md5: None,
-                                                        type_field: "Featured",
-                                                        uploaded_date: "2024-12-06T09:49:02.319407Z",
-                                                        url: "https://media.fab.com/image_previews/gallery_images/f0b6dd69-3768-4763-8f65-b33fb1f4c3c3/bb63531b-e5b9-4454-99ea-3fdb17892cb0.jpg",
-                                                        width: "640"
-                                                    }
-                                                ], legacy_item_id: Some("f4a3f3ff297f43ac92e0dda0b5bc351e"),
-                                                project_versions: [
-                                                    ProjectVersion {
-                                                        artifact_id: "Industryf4a3f3ff297fV1",
-                                                        build_versions: [
-                                                            BuildVersion {
-                                                                build_version: "5.6.0-40032047+++UE5+Dev-Marketplace-Windows",
-                                                                platform: "Windows"
+                                        println!("{}", "Downloading first asset...".green().bold());
+
+                                        // Iterate through distribution points to find a working download URL
+                                        for man in manifest.iter() {
+                                            let mut downloaded = false;
+                                            for url in man.distribution_point_base_urls.iter() {
+                                                println!("Trying to get download manifest from {}", url);
+                                                let download_manifest = epic_games_services.fab_download_manifest(man.clone(), url).await;
+                                                match download_manifest {
+                                                    Ok(dm) => {
+
+                                                        println!("{}", "Got download manifest successfully!".green());
+                                                        println!("Expected Hash: {}", man.manifest_hash);
+                                                        println!("Download Hash: {}", dm.custom_field("DownloadedManifestHash").unwrap_or_default());
+
+                                                        // Build an output folder under the project root for this asset
+                                                        let out_root = std::path::Path::new("downloads")
+                                                            .join(asset.title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>','|'][..], "_"));
+
+                                                        // Call your downloader using the working distribution point URL and the dm
+                                                        match download_asset(&dm, url.as_str(), &out_root) {
+                                                            Ok(_) => {
+                                                                println!("✅ Finished downloading to {}", out_root.display());
                                                             }
-                                                        ],
-                                                        engine_versions: [
-                                                            "UE_4.18",
-                                                            "UE_4.19",
-                                                            "UE_4.20",
-                                                            "UE_4.21",
-                                                            "UE_4.22",
-                                                            "UE_4.23",
-                                                            "UE_4.24",
-                                                            "UE_4.25",
-                                                            "UE_4.26",
-                                                            "UE_4.27",
-                                                            "UE_5.0",
-                                                            "UE_5.1",
-                                                            "UE_5.2",
-                                                            "UE_5.3",
-                                                            "UE_5.4",
-                                                            "UE_5.5",
-                                                            "UE_5.6"
-                                                        ],
-                                                        target_platforms: ["Windows"]
+                                                            Err(e) => {
+                                                                println!("❌ Download failed for {}: {:?}", asset.title, e);
+                                                            }
+                                                        }
+
+                                                        downloaded = true;
+                                                        break;
                                                     }
-                                                ],
-                                                source: "fab",
-                                                title: "Industry Props Pack 6",
-                                                url: "https://www.fab.com/listings/b5603e44-e1b0-4346-9c3d-04887aa9f87d"
+                                                    Err(e) => {
+                                                        match e {
+                                                            EpicAPIError::FabTimeout => {
+                                                                sleep(Duration::from_millis(1000)).await;
+                                                                continue;
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                        println!("NO Manifest for {} - {}", asset.title, version.artifact_id);
+                                                        break;
+                                                    }
+                                                }
                                             }
-                                        */
-                                        break;
+                                            sleep(Duration::from_millis(1000)).await;
+                                        }
+                                        break; // Exit the loop once we've processed this manifest
                                     }
                                     Err(e) => {
                                         match e {
@@ -148,22 +219,24 @@ async fn handle_refresh_fab_list() -> HttpResponse {
                                                 sleep(Duration::from_millis(1000)).await;
                                                 continue;
                                             }
-                                            _ => {}
+                                            _ => {
+                                                println!("NO Manifest for {} - {}", asset.title, version.artifact_id);
+                                                break;
+                                            }
                                         }
-                                        println!("NO Manifest for {} - {}", asset.title, version.artifact_id);
-                                        break;
                                     }
                                 }
                             }
-                            sleep(Duration::from_millis(1000)).await;
                         }
+                    } else {
+                        println!("No assets found in the library");
                     }
+
+                    HttpResponse::Ok().finish()
                 }
             }
         }
     }
-
-    HttpResponse::Ok().finish()
 }
 
 

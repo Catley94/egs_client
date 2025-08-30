@@ -1,7 +1,13 @@
 use std::io;
-use egs_api::api::types::account::{AccountData, AccountInfo};
+use egs_api::api::types::account::{AccountData, AccountInfo, UserData};
 use egs_api::api::types::fab_library::FabLibrary;
 use egs_api::EpicGames;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::fs;
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
 
@@ -35,6 +41,53 @@ pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec
     epic_games_services
         .account_ids_details(vec![epic_games_services.user_details().account_id.unwrap_or_default()])
         .await
+}
+
+// ===================== Token caching helpers =====================
+fn token_cache_path() -> PathBuf {
+    // Store tokens in the user's home directory
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push(".egs_client_tokens.json");
+        p
+    } else {
+        // Fallback: current directory
+        PathBuf::from(".egs_client_tokens.json")
+    }
+}
+
+pub fn save_user_details(user: &UserData) -> std::io::Result<()> {
+    let path = token_cache_path();
+    let data = serde_json::to_vec_pretty(user).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    fs::write(&path, data)?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(())
+}
+
+pub fn load_user_details() -> Option<UserData> {
+    let path = token_cache_path();
+    if !path.exists() { return None; }
+    let data = fs::read(path).ok()?;
+    serde_json::from_slice::<UserData>(&data).ok()
+}
+
+pub async fn try_cached_login(epic: &mut EpicGames) -> bool {
+    if let Some(user) = load_user_details() {
+        epic.set_user_details(user);
+        if epic.login().await {
+            // On successful relogin, persist any updated expiry times
+            let ud = epic.user_details();
+            let _ = save_user_details(&ud);
+            return true;
+        }
+    }
+    false
 }
 
 pub async fn get_fab_library_items(epic_games_services: &mut EpicGames, info: AccountData) -> Option<FabLibrary> {
