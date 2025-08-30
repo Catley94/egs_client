@@ -166,9 +166,12 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                 Some(retrieved_assets) => {
                     println!("Library items length: {:?}", retrieved_assets.results.len());
 
-                    // Only process the first asset as a test
-                    if let Some(asset) = retrieved_assets.results.first() {
-                        println!("{}", format!("                                       PROCESSING_FIRST_ITEM_ONLY                                                     ").black().on_bright_cyan().bold());
+                    // Process all assets instead of just the first one
+                    for (asset_idx, asset) in retrieved_assets.results.iter().enumerate() {
+                        let asset_num = asset_idx + 1;
+                        let total_assets = retrieved_assets.results.len();
+                        
+                        println!("{}", format!("                        PROCESSING_ASSET_{}_OF_{}                        ", asset_num, total_assets).black().on_bright_cyan().bold());
                         
                         for version in asset.project_versions.iter() {
                             loop {
@@ -180,15 +183,15 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                                 ).await;
                                 match manifest {
                                     Ok(manifest) => {
-                                        println!("{}", format!("                                       FIRST_ITEM                                                     ").black().on_bright_cyan().bold());
+                                        println!("{}", format!("                        ASSET_{}_OF_{}: {}                        ", asset_num, total_assets, asset.title).black().on_bright_cyan().bold());
                                         println!("OK Manifest for {} - {} - {}", asset.title, version.artifact_id, asset.source);
-                                        println!("______________________________________FULL_ASSET_________________________________________________________________");
+                                        println!("______________________________________ASSET_{}________________________________________________________________", asset_num);
                                         println!("Full Asset: {:?}", asset);
-                                        println!("_________________________________________FULL_MANIFEST___________________________________________________________");
+                                        println!("_________________________________________MANIFEST_{}___________________________________________________________", asset_num);
                                         println!("Full Manifest: {:?}", manifest);
                                         println!("_________________________________________________________________________________________________________________");
 
-                                        println!("{}", "Downloading first asset...".green().bold());
+                                        println!("{}", format!("Downloading asset {} of {}: {}...", asset_num, total_assets, asset.title).green().bold());
 
                                         // Iterate through distribution points to find a working download URL
                                         for man in manifest.iter() {
@@ -210,10 +213,10 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                                                         // Call your downloader using the working distribution point URL and the dm
                                                         match download_asset(&dm, url.as_str(), &out_root) {
                                                             Ok(_) => {
-                                                                println!("✅ Finished downloading to {}", out_root.display());
+                                                                println!("✅ Finished downloading asset {} of {}: {} to {}", asset_num, total_assets, asset.title, out_root.display());
                                                             }
                                                             Err(e) => {
-                                                                println!("❌ Download failed for {}: {:?}", asset.title, e);
+                                                                println!("❌ Download failed for asset {} of {}: {} - {:?}", asset_num, total_assets, asset.title, e);
                                                             }
                                                         }
 
@@ -252,10 +255,9 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                                 }
                             }
                         }
-                    } else {
-                        println!("No assets found in the library");
                     }
 
+                    println!("{}", "🎉 Finished processing all assets!".green().bold());
                     HttpResponse::Ok().finish()
                 }
             }
