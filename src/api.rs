@@ -9,7 +9,7 @@ use std::path::Path;
 
 use egs_api::api::types::download_manifest::DownloadManifest;
 
-fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Result<(), anyhow::Error> {
+async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Result<(), anyhow::Error> {
     use egs_api::api::types::chunk::Chunk;
     use sha1::{Digest, Sha1};
     use std::io::{self, Write};
@@ -19,8 +19,15 @@ fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Re
     let temp_dir = out_root.parent().map(|p| p.join("temp")).unwrap_or_else(|| out_root.join("temp"));
     std::fs::create_dir_all(&temp_dir)?;
 
+    let client = reqwest::Client::new();
+
     let files: Vec<_> = dm.files().into_iter().collect();
     let total_files = files.len();
+    if total_files == 0 {
+        return Err(anyhow::anyhow!("download manifest contains no files"));
+    }
+    let mut downloaded_files: usize = 0;
+    let mut skipped_files: usize = 0;
 
     for (file_idx, (filename, file)) in files.into_iter().enumerate() {
         let file_no = file_idx + 1;
@@ -35,9 +42,15 @@ fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Re
         }
         let out_path = out_path.join(&filename);
         if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent)?; }
+        let tmp_out_path = out_path.with_extension("part");
 
         // 1) Ensure all required chunks are downloaded to temp as <guid>.chunk using signed links
         let total_chunks = file.file_chunk_parts.len();
+        if total_chunks == 0 {
+            eprintln!("Warning: zero chunk parts listed for file {}; skipping file", filename);
+            skipped_files += 1;
+            continue;
+        }
         for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
             let guid = &part.guid;
             let chunk_path = temp_dir.join(format!("{}.chunk", guid));
@@ -51,22 +64,22 @@ fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Re
 
             let link = part.link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
             let url = link.to_string();
-            let mut resp = reqwest::blocking::get(url);
-            // Simple retry once if transient error
-            if resp.is_err() { resp = reqwest::blocking::get(link.clone()); }
-            let mut resp = resp.map_err(|e| anyhow::anyhow!("chunk request failed for {}: {}", guid, e))?;
-            if !resp.status().is_success() {
-                return Err(anyhow::anyhow!("chunk HTTP {} for {}", resp.status(), guid));
-            }
-            let bytes = resp.bytes().map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
+            // Async request with one retry
+            let mut resp = client.get(url.clone()).send().await;
+            if resp.is_err() { resp = client.get(url.clone()).send().await; }
+            let resp = resp.map_err(|e| anyhow::anyhow!("chunk request failed for {}: {}", guid, e))?;
+            let resp = resp.error_for_status().map_err(|e| anyhow::anyhow!("chunk HTTP {} for {}", e.status().unwrap_or_default(), guid))?;
+            let bytes = resp.bytes().await.map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
             std::fs::create_dir_all(chunk_path.parent().unwrap())?;
             std::fs::write(&chunk_path, &bytes)?;
         }
         println!("\r  chunks: {}/{} (100%) - done", total_chunks, total_chunks);
 
         // 2) Reconstruct final file by reading each chunk and copying the slice [offset, offset+size)
-        let mut out = std::fs::File::create(&out_path)?;
+        let mut out = std::fs::File::create(&tmp_out_path)?;
         let mut hasher = Sha1::new();
+        let total_bytes: u128 = file.file_chunk_parts.iter().map(|p| p.size as u128).sum();
+        let mut written: u64 = 0;
         for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
             let guid = &part.guid;
             let chunk_path = temp_dir.join(format!("{}.chunk", guid));
@@ -78,13 +91,16 @@ fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Re
             let slice = &chunk.data[start..end];
             std::io::Write::write_all(&mut out, slice)?;
             hasher.update(slice);
+            written += part.size as u64;
 
-            // assembly progress
+            // assembly progress: chunks and MB
             let total_chunks = file.file_chunk_parts.len();
-            print!("\r  assembling: {}/{} ({}%)", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+            let mb_done = (written as f64) / (1024.0 * 1024.0);
+            let mb_total = (total_bytes as f64) / (1024.0 * 1024.0);
+            print!("\r  assembling: {}/{} ({}%)  [{:.2} / {:.2} MB]", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100), mb_done, mb_total);
             io::stdout().flush().ok();
         }
-        println!("\r  assembling: {}/{} (100%) - done", file.file_chunk_parts.len(), file.file_chunk_parts.len());
+        println!("\r  assembling: {}/{} (100%)  [{:.2} / {:.2} MB] - done", file.file_chunk_parts.len(), file.file_chunk_parts.len(), (total_bytes as f64)/(1024.0*1024.0), (total_bytes as f64)/(1024.0*1024.0));
 
         // Optional: verify file hash if provided (DownloadManifest uses sha1 hex)
         if !file.file_hash.is_empty() {
@@ -94,6 +110,23 @@ fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Re
                 eprintln!("Warning: SHA1 mismatch for {} (expected {}, got {})", filename, file.file_hash, got_hex);
             }
         }
+
+        // finalize atomic rename
+        drop(out);
+        std::fs::rename(&tmp_out_path, &out_path)?;
+        downloaded_files += 1;
+    }
+
+    if downloaded_files == 0 {
+        return Err(anyhow::anyhow!(format!(
+            "no files could be downloaded: {} files listed, {} skipped (zero chunks)",
+            total_files, skipped_files
+        )));
+    } else if skipped_files > 0 {
+        eprintln!(
+            "Note: {} of {} files were skipped due to zero chunk parts",
+            skipped_files, total_files
+        );
     }
 
     Ok(())
@@ -211,7 +244,7 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                                                             .join(asset.title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>','|'][..], "_"));
 
                                                         // Call your downloader using the working distribution point URL and the dm
-                                                        match download_asset(&dm, url.as_str(), &out_root) {
+                                                        match download_asset(&dm, url.as_str(), &out_root).await {
                                                             Ok(_) => {
                                                                 println!("✅ Finished downloading asset {} of {}: {} to {}", asset_num, total_assets, asset.title, out_root.display());
                                                             }
