@@ -22,6 +22,7 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
     let client = reqwest::Client::new();
 
     let files: Vec<_> = dm.files().into_iter().collect();
+    println!("Files: {:?}", files);
     let total_files = files.len();
     if total_files == 0 {
         return Err(anyhow::anyhow!("download manifest contains no files"));
@@ -29,7 +30,9 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
     let mut downloaded_files: usize = 0;
     let mut skipped_files: usize = 0;
 
+
     for (file_idx, (filename, file)) in files.into_iter().enumerate() {
+        println!("File: {:?}", file);
         let file_no = file_idx + 1;
         println!("Downloading file {}/{}: {}", file_no, total_files, filename);
         io::stdout().flush().ok();
@@ -233,7 +236,20 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                                                 println!("Trying to get download manifest from {}", url);
                                                 let download_manifest = epic_games_services.fab_download_manifest(man.clone(), url).await;
                                                 match download_manifest {
-                                                    Ok(dm) => {
+                                                    Ok(mut dm) => {
+
+                                                        // Ensure the manifest knows the source URL so egs_api can generate chunk links
+                                                        // DownloadManifest.files() uses custom_fields["SourceURL"] or ["BaseUrl"]
+                                                        {
+                                                            use std::collections::HashMap;
+                                                            if let Some(ref mut fields) = dm.custom_fields {
+                                                                fields.insert("SourceURL".to_string(), url.clone());
+                                                            } else {
+                                                                let mut map = HashMap::new();
+                                                                map.insert("SourceURL".to_string(), url.clone());
+                                                                dm.custom_fields = Some(map);
+                                                            }
+                                                        }
 
                                                         println!("{}", "Got download manifest successfully!".green());
                                                         println!("Expected Hash: {}", man.manifest_hash);
