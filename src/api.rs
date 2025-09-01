@@ -1,5 +1,5 @@
 use std::time::Duration;
-use actix_web::{get, HttpResponse};
+use actix_web::{get, HttpResponse, web};
 use colored::Colorize;
 use egs_api::api::error::EpicAPIError;
 use tokio::time::sleep;
@@ -29,6 +29,7 @@ pub async fn refresh_fab_list() -> HttpResponse {
     handle_refresh_fab_list().await
 }
 
+// Refreshes manifests only (no downloads) and returns a summary list
 pub async fn handle_refresh_fab_list() -> HttpResponse {
     // Try to use cached refresh token first (no browser, no copy-paste)
     let mut epic_games_services = utils::create_epic_games_services();
@@ -77,112 +78,10 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                 }
                 Some(retrieved_assets) => {
                     println!("Library items length: {:?}", retrieved_assets.results.len());
+                    // Return the library items so the UI can populate list/images
+                    return HttpResponse::Ok().json(&retrieved_assets);
 
-                    // Process all assets instead of just the first one
-                    for (asset_idx, asset) in retrieved_assets.results.iter().enumerate() {
-                        let asset_num = asset_idx + 1;
-                        let total_assets = retrieved_assets.results.len();
-                        
-                        println!("{}", format!("                        PROCESSING_ASSET_{}_OF_{}                        ", asset_num, total_assets).black().on_bright_cyan().bold());
-                        
-                        for version in asset.project_versions.iter() {
-                            loop {
-                                let manifest = epic_games_services.fab_asset_manifest(
-                                    &version.artifact_id,
-                                    &asset.asset_namespace,
-                                    &asset.asset_id,
-                                    None,
-                                ).await;
-                                match manifest {
-                                    Ok(manifest) => {
-                                        println!("{}", format!("                        ASSET_{}_OF_{}: {}                        ", asset_num, total_assets, asset.title).black().on_bright_cyan().bold());
-                                        println!("OK Manifest for {} - {} - {}", asset.title, version.artifact_id, asset.source);
-                                        println!("______________________________________ASSET_{}________________________________________________________________", asset_num);
-                                        println!("Full Asset: {:?}", asset);
-                                        println!("_________________________________________MANIFEST_{}___________________________________________________________", asset_num);
-                                        println!("Full Manifest: {:?}", manifest);
-                                        println!("_________________________________________________________________________________________________________________");
-
-                                        println!("{}", format!("Downloading asset {} of {}: {}...", asset_num, total_assets, asset.title).green().bold());
-
-                                        // Iterate through distribution points to find a working download URL
-                                        for man in manifest.iter() {
-                                            let mut downloaded = false;
-                                            for url in man.distribution_point_base_urls.iter() {
-                                                println!("Trying to get download manifest from {}", url);
-                                                let download_manifest = epic_games_services.fab_download_manifest(man.clone(), url).await;
-                                                match download_manifest {
-                                                    Ok(mut dm) => {
-
-                                                        // Ensure the manifest knows the source URL so egs_api can generate chunk links
-                                                        // DownloadManifest.files() uses custom_fields["SourceURL"] or ["BaseUrl"]
-                                                        {
-                                                            use std::collections::HashMap;
-                                                            if let Some(ref mut fields) = dm.custom_fields {
-                                                                fields.insert("SourceURL".to_string(), url.clone());
-                                                            } else {
-                                                                let mut map = HashMap::new();
-                                                                map.insert("SourceURL".to_string(), url.clone());
-                                                                dm.custom_fields = Some(map);
-                                                            }
-                                                        }
-
-                                                        println!("{}", "Got download manifest successfully!".green());
-                                                        println!("Expected Hash: {}", man.manifest_hash);
-                                                        println!("Download Hash: {}", dm.custom_field("DownloadedManifestHash").unwrap_or_default());
-
-                                                        // Build an output folder under the project root for this asset
-                                                        let out_root = std::path::Path::new("downloads")
-                                                            .join(asset.title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>','|'][..], "_"));
-
-                                                        // Call your downloader using the working distribution point URL and the dm
-                                                        match utils::download_asset(&dm, url.as_str(), &out_root).await {
-                                                            Ok(_) => {
-                                                                println!("✅ Finished downloading asset {} of {}: {} to {}", asset_num, total_assets, asset.title, out_root.display());
-                                                            }
-                                                            Err(e) => {
-                                                                println!("❌ Download failed for asset {} of {}: {} - {:?}", asset_num, total_assets, asset.title, e);
-                                                            }
-                                                        }
-
-                                                        downloaded = true;
-                                                        break;
-                                                    }
-                                                    Err(e) => {
-                                                        match e {
-                                                            EpicAPIError::FabTimeout => {
-                                                                sleep(Duration::from_millis(1000)).await;
-                                                                continue;
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                        println!("NO Manifest for {} - {}", asset.title, version.artifact_id);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                            sleep(Duration::from_millis(1000)).await;
-                                        }
-                                        break; // Exit the loop once we've processed this manifest
-                                    }
-                                    Err(e) => {
-                                        match e {
-                                            EpicAPIError::FabTimeout => {
-                                                sleep(Duration::from_millis(1000)).await;
-                                                continue;
-                                            }
-                                            _ => {
-                                                println!("NO Manifest for {} - {}", asset.title, version.artifact_id);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    println!("{}", "🎉 Finished processing all assets!".green().bold());
+                    // Reached only if json() above wasn't returned; keep OK fallback
                     HttpResponse::Ok().finish()
                 }
             }
@@ -193,4 +92,79 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 
 
 
+
+
+
+
+#[get("/download-asset/{namespace}/{asset_id}/{artifact_id}")]
+pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpResponse {
+    let (namespace, asset_id, artifact_id) = path.into_inner();
+
+    let mut epic = utils::create_epic_games_services();
+    if !utils::try_cached_login(&mut epic).await {
+        let auth_code = utils::get_auth_code();
+        let _ = epic.auth_code(None, Some(auth_code)).await;
+        let _ = epic.login().await;
+        let _ = utils::save_user_details(&epic.user_details());
+    }
+
+    // Fetch manifest for the specified asset/artifact
+    let manifest_res = epic.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
+    let manifests = match manifest_res {
+        Ok(m) => m,
+        Err(e) => {
+            return HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e));
+        }
+    };
+
+    for man in manifests.iter() {
+        for url in man.distribution_point_base_urls.iter() {
+            if let Ok(mut dm) = epic.fab_download_manifest(man.clone(), url).await {
+                // Ensure SourceURL present for downloader
+                use std::collections::HashMap;
+                if let Some(ref mut fields) = dm.custom_fields {
+                    fields.insert("SourceURL".to_string(), url.clone());
+                } else {
+                    let mut map = HashMap::new();
+                    map.insert("SourceURL".to_string(), url.clone());
+                    dm.custom_fields = Some(map);
+                }
+
+                // Resolve a human-friendly title for folder name
+                let mut title_folder: Option<String> = None;
+                // Try to use the library list to find the matching asset by IDs
+                if let Some(details) = utils::get_account_details(&mut epic).await {
+                    if let Some(lib) = utils::get_fab_library_items(&mut epic, details).await {
+                        if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
+                            // Optionally verify artifact exists in this asset's versions
+                            if asset.project_versions.iter().any(|v| v.artifact_id == artifact_id) {
+                                let mut t = asset.title.clone();
+                                // sanitize
+                                let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+                                t = t.replace(&illegal[..], "_");
+                                // trim spaces and dots
+                                let t = t.trim().trim_matches('.').to_string();
+                                if !t.is_empty() {
+                                    title_folder = Some(t);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let folder_name = title_folder.unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
+                let out_root = std::path::Path::new("downloads").join(folder_name);
+                match utils::download_asset(&dm, url.as_str(), &out_root).await {
+                    Ok(_) => return HttpResponse::Ok().body("Download complete"),
+                    Err(e) => {
+                        eprintln!("Download failed from {}: {:?}", url, e);
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+
+    HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
+}
 
