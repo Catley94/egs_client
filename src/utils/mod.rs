@@ -47,6 +47,8 @@ pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec
 // ===================== Token caching helpers =====================
 fn token_cache_path() -> PathBuf {
     // Store tokens in the user's home directory
+    // TODO: Change this to a location properly in cache, or local to the project
+    // TODO: Also add a way to clear the cached credentials
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
         p.push(".egs_client_tokens.json");

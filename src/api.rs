@@ -48,9 +48,7 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
     // Try to use cached refresh token first (no browser, no copy-paste)
     let mut epic_games_services = utils::create_epic_games_services();
     if !utils::try_cached_login(&mut epic_games_services).await {
-        // Fallback to manual auth code flow
-        // 1. Open the Web Browser for the user to get the authentication code
-        // 2. Get auth code from user via CLI
+
         let auth_code = utils::get_auth_code();
 
         // 3. Authenticate with Epic's Servers using the code
