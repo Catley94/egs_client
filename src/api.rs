@@ -47,6 +47,43 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
         if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent)?; }
         let tmp_out_path = out_path.with_extension("part");
 
+        // Skip if final file already exists and matches expected hash/size
+        let mut skip_existing = false;
+        if out_path.exists() {
+            // Prefer verifying by SHA1 hash if provided
+            if !file.file_hash.is_empty() {
+                if let Ok(mut f) = std::fs::File::open(&out_path) {
+                    use std::io::Read;
+                    let mut hasher = Sha1::new();
+                    let mut buf = [0u8; 1024 * 1024];
+                    loop {
+                        match f.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => hasher.update(&buf[..n]),
+                            Err(_) => break,
+                        }
+                    }
+                    let got_hex = hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    if got_hex == file.file_hash {
+                        println!("  skipping: existing file is up-to-date");
+                        skip_existing = true;
+                    }
+                }
+            } else {
+                // Fallback: compare expected size (sum of parts)
+                let expected_size: u64 = file.file_chunk_parts.iter().map(|p| p.size as u64).sum();
+                if let Ok(meta) = std::fs::metadata(&out_path) {
+                    if meta.len() == expected_size {
+                        println!("  skipping: existing file size matches (no hash available)");
+                        skip_existing = true;
+                    }
+                }
+            }
+        }
+        if skip_existing {
+            continue;
+        }
+
         // 1) Ensure all required chunks are downloaded to temp as <guid>.chunk using signed links
         let total_chunks = file.file_chunk_parts.len();
         if total_chunks == 0 {
