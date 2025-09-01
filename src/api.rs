@@ -9,17 +9,31 @@ use std::path::Path;
 
 use egs_api::api::types::download_manifest::DownloadManifest;
 
+use std::fs;
+use std::io::Read;
+use serde_json;
 
+const FAB_CACHE_DIR: &str = "cache";
+const FAB_CACHE_FILE: &str = "cache/fab_list.json";
 
 #[get("/get-fab-list")]
 pub async fn get_fab_list() -> HttpResponse {
-    // Respond with the list of Fab Assets
-    // If cached, return cached list
-    // If not cached, refresh list and cache it - refresh_fab_list()
-
-    // handle_refresh_fab_list().await
-
-    HttpResponse::Ok().finish()
+    // Try cached file first
+    let path = std::path::Path::new(FAB_CACHE_FILE);
+    if path.exists() {
+        if let Ok(mut f) = fs::File::open(path) {
+            let mut buf = Vec::new();
+            if f.read_to_end(&mut buf).is_ok() {
+                println!("Using cached FAB list from {}", FAB_CACHE_FILE);
+                // Return raw JSON contents
+                return HttpResponse::Ok()
+                    .content_type("application/json")
+                    .body(buf);
+            }
+        }
+    }
+    // Fallback: refresh and cache
+    handle_refresh_fab_list().await
 }
 
 #[get("/refresh-fab-list")]
@@ -57,11 +71,11 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 
     // 4. Get account details
     let details = utils::get_account_details(&mut epic_games_services).await;
-    println!("Account details: {:?}", details);
+    // println!("Account details: {:?}", details);
 
     // 5. Get account details
     let info = utils::get_account_info(&mut epic_games_services).await;
-    println!("Account info: {:?}", info);
+    // println!("Account info: {:?}", info);
 
     // 6. Get library items
     match details {
@@ -78,6 +92,16 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                 }
                 Some(retrieved_assets) => {
                     println!("Library items length: {:?}", retrieved_assets.results.len());
+                    // Save to cache file
+                    if let Ok(json_bytes) = serde_json::to_vec_pretty(&retrieved_assets) {
+                        if let Some(parent) = std::path::Path::new(FAB_CACHE_DIR).parent() { let _ = fs::create_dir_all(parent); }
+                        let _ = fs::create_dir_all(FAB_CACHE_DIR);
+                        if let Err(e) = fs::write(FAB_CACHE_FILE, &json_bytes) {
+                            eprintln!("Warning: failed to write FAB cache: {}", e);
+                        }
+                    } else {
+                        eprintln!("Warning: failed to serialize FAB library for cache");
+                    }
                     // Return the library items so the UI can populate list/images
                     return HttpResponse::Ok().json(&retrieved_assets);
 
@@ -88,13 +112,6 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
         }
     }
 }
-
-
-
-
-
-
-
 
 #[get("/download-asset/{namespace}/{asset_id}/{artifact_id}")]
 pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpResponse {
