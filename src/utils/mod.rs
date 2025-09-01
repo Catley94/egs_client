@@ -1,3 +1,24 @@
+//! Utilities: authentication, token caching, Fab library access, and file downloads.
+//!
+//! This module centralizes the heavy lifting used by the HTTP API layer:
+//! - Auth-code login flow and cached token reuse (try_cached_login)
+//! - Serialization of UserData tokens to a local file with safe permissions
+//! - Convenience wrappers for EGS endpoints (account details/info, library items)
+//! - Robust downloader assembling files from chunk parts described by a DownloadManifest
+//!
+//! Key concepts and files:
+//! - Token cache: ~/.egs_client_tokens.json (0600 on Unix)
+//! - Fab cache (used by api.rs): cache/fab_list.json
+//! - Download output structure: downloads/<Asset Title>/data/...
+//!
+//! Security note:
+//! - Token file contains sensitive access/refresh tokens. Ensure your user account permissions
+//!   restrict access to the file. On Unix we set 0600 automatically.
+//!
+//! Links:
+//! - egs-api crate docs: https://docs.rs/egs-api
+//! - Fab asset types: https://docs.rs/egs-api/latest/egs_api/api/types/
+
 use std::io;
 use egs_api::api::types::account::{AccountData, AccountInfo, UserData};
 use egs_api::api::types::fab_library::FabLibrary;
@@ -12,6 +33,14 @@ use egs_api::api::types::download_manifest::DownloadManifest;
 
 const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
 
+/// Opens a browser to Epic login and requests the authorizationCode, then reads it from stdin.
+///
+/// Returns the trimmed code without quotes, suitable for EpicGames::auth_code(None, Some(code)).
+///
+/// Steps:
+/// - Opens EPIC_LOGIN_URL in your default browser (falls back to printing URL).
+/// - Prompts: "Please enter the 'authorizationCode' value from the JSON response".
+/// - Reads a line from stdin, trims and removes quotes.
 pub fn get_auth_code() -> String {
 
     if webbrowser::open(EPIC_LOGIN_URL).is_err() {
@@ -28,15 +57,26 @@ pub fn get_auth_code() -> String {
     auth_code
 }
 
+/// Constructs a new EpicGames client instance.
+///
+/// The client is initially unauthenticated. Pair with try_cached_login or the
+/// interactive get_auth_code + auth_code + login flow.
 pub fn create_epic_games_services() -> EpicGames {
     EpicGames::new()
 }
 
+/// Fetches the current user's AccountData using the authenticated client.
+///
+/// Returns None if the request fails or the client is not authenticated.
 pub async fn get_account_details(epic_games_services: &mut EpicGames) -> Option<AccountData> {
     // TODO What's the difference between this and get_account_info?
     epic_games_services.account_details().await
 }
 
+/// Fetches the AccountInfo for the current user ID via account_ids_details.
+///
+/// Note: This returns a Vec<AccountInfo> because the API supports batch lookup
+/// by multiple IDs; here we pass the current account ID only.
 pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec<AccountInfo>> {
     // TODO What's the difference between this and get_account_details?
     epic_games_services
@@ -45,6 +85,14 @@ pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec
 }
 
 // ===================== Token caching helpers =====================
+/// Returns the filesystem path for the local token cache file.
+///
+/// Current behavior:
+/// - Uses $HOME/.egs_client_tokens.json when HOME is set.
+/// - Falls back to ./.egs_client_tokens.json otherwise.
+///
+/// Future improvements (TODO):
+/// - Move to a proper cache/config directory and provide a "clear credentials" helper.
 fn token_cache_path() -> PathBuf {
     // Store tokens in the user's home directory
     // TODO: Change this to a location properly in cache, or local to the project
@@ -59,6 +107,9 @@ fn token_cache_path() -> PathBuf {
     }
 }
 
+/// Persists the given UserData (tokens) to the token cache file in pretty JSON.
+///
+/// On Unix systems, the file permissions are tightened to 0600.
 pub fn save_user_details(user: &UserData) -> std::io::Result<()> {
     let path = token_cache_path();
     let data = serde_json::to_vec_pretty(user).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -73,6 +124,7 @@ pub fn save_user_details(user: &UserData) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Loads UserData (tokens) from the token cache file, if it exists and parses.
 pub fn load_user_details() -> Option<UserData> {
     let path = token_cache_path();
     if !path.exists() { return None; }
@@ -80,6 +132,10 @@ pub fn load_user_details() -> Option<UserData> {
     serde_json::from_slice::<UserData>(&data).ok()
 }
 
+/// Attempts to login using previously cached tokens.
+///
+/// Returns true if login succeeds (including when tokens are refreshed), false otherwise.
+/// On success, writes back any updated expiry/refresh info to the cache file.
 pub async fn try_cached_login(epic: &mut EpicGames) -> bool {
     if let Some(user) = load_user_details() {
         epic.set_user_details(user);
@@ -93,10 +149,28 @@ pub async fn try_cached_login(epic: &mut EpicGames) -> bool {
     false
 }
 
+/// Retrieves the FabLibrary listing for the provided account.
+///
+/// This is a convenience wrapper around EpicGames::fab_library_items.
 pub async fn get_fab_library_items(epic_games_services: &mut EpicGames, info: AccountData) -> Option<FabLibrary> {
     epic_games_services.fab_library_items(info.id).await
 }
 
+/// Downloads and assembles all files described in the provided DownloadManifest.
+///
+/// Layout:
+/// - Files are written under out_root/data/<relative_path>
+/// - Temporary chunk files are stored under sibling temp/ as <GUID>.chunk
+///
+/// Behavior highlights:
+/// - Skips already present files by verifying SHA1 (when available) or total size.
+/// - Downloads signed chunk URLs with a simple one-retry policy.
+/// - Assembles each output file by slicing the chunk byte ranges defined in file_chunk_parts.
+/// - Optionally verifies file SHA1 after assembly (when file_hash is provided).
+/// - Performs atomic rename from .part to final file after successful assembly.
+///
+/// Returns Ok on success (including when all files are already present), or an error
+/// when no files could be downloaded and none were up-to-date.
 pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Result<(), anyhow::Error> {
     use egs_api::api::types::chunk::Chunk;
     use sha1::{Digest, Sha1};
