@@ -22,7 +22,7 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
     let client = reqwest::Client::new();
 
     let files: Vec<_> = dm.files().into_iter().collect();
-    println!("Files: {:?}", files);
+    // println!("Files: {:?}", files);
     let total_files = files.len();
     if total_files == 0 {
         return Err(anyhow::anyhow!("download manifest contains no files"));
@@ -32,7 +32,7 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
 
 
     for (file_idx, (filename, file)) in files.into_iter().enumerate() {
-        println!("File: {:?}", file);
+        // println!("File: {:?}", file);
         let file_no = file_idx + 1;
         println!("Downloading file {}/{}: {}", file_no, total_files, filename);
         io::stdout().flush().ok();
@@ -58,13 +58,12 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
             let guid = &part.guid;
             let chunk_path = temp_dir.join(format!("{}.chunk", guid));
             if chunk_path.exists() {
-                print!("\r  chunks: {}/{} ({}%) - using cached chunk", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+                print!("\r  chunks: {}/{} ({}%) - using cached chunk    ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
                 io::stdout().flush().ok();
                 continue;
             }
-            print!("\r  chunks: {}/{} ({}%) - downloading...", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+            print!("\r  chunks: {}/{} ({}%) - downloading...        ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
             io::stdout().flush().ok();
-
             let link = part.link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
             let url = link.to_string();
             // Async request with one retry
@@ -76,7 +75,7 @@ async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path)
             std::fs::create_dir_all(chunk_path.parent().unwrap())?;
             std::fs::write(&chunk_path, &bytes)?;
         }
-        println!("\r  chunks: {}/{} (100%) - done", total_chunks, total_chunks);
+        println!("\r  chunks: {}/{} (100%) - done                    ", total_chunks, total_chunks);
 
         // 2) Reconstruct final file by reading each chunk and copying the slice [offset, offset+size)
         let mut out = std::fs::File::create(&tmp_out_path)?;
