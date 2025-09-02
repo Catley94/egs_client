@@ -49,13 +49,15 @@
 //!   is implemented in crate::utils and the egs_api crate.
 //! - All endpoints return HttpResponse and are designed for a UI frontend to consume.
 
-use actix_web::{get, HttpResponse, web};
+use actix_web::{get, post, HttpResponse, web, Responder};
 use colored::Colorize;
 use crate::utils;
 
 use std::fs;
 use std::io::Read;
+use serde::Serialize;
 use serde_json;
+use std::path::{Path, PathBuf};
 
 /// Directory where the Fab library cache is stored.
 const FAB_CACHE_DIR: &str = "cache";
@@ -273,5 +275,416 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
     }
 
     HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
+}
+
+// ===== Unreal Projects Discovery =====
+
+#[derive(Serialize)]
+struct UnrealProjectInfo {
+    name: String,
+    path: String,
+    uproject_file: String,
+}
+
+#[derive(Serialize)]
+struct UnrealProjectsResponse {
+    base_directory: String,
+    projects: Vec<UnrealProjectInfo>,
+}
+
+fn default_unreal_projects_dir() -> PathBuf {
+    // Default: $HOME/Documents/Unreal Projects
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push("Documents");
+        p.push("Unreal Projects");
+        p
+    } else {
+        // Fallback to current dir if HOME not set
+        PathBuf::from(".")
+    }
+}
+
+/// Lists Unreal Engine projects under a base directory by detecting folders containing a .uproject file.
+///
+/// Route:
+/// - GET /list-unreal-projects
+///
+/// Query parameters:
+/// - base: Optional override for the base directory. Defaults to $HOME/Documents/Unreal Projects.
+///
+/// Returns:
+/// - 200 OK with JSON body: {
+///     "base_directory": String,
+///     "projects": [ { name, path, uproject_file }, ... ]
+///   }
+#[get("/list-unreal-projects")]
+pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
+    // Optional query parameter: ?base=/custom/path
+    let base_dir = query.get("base").map(|s| PathBuf::from(s)).unwrap_or_else(default_unreal_projects_dir);
+    
+    let mut results: Vec<UnrealProjectInfo> = Vec::new();
+
+    if base_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&base_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Check for any .uproject file inside this directory (non-recursive)
+                    if let Ok(sub) = fs::read_dir(&path) {
+                        for f in sub.flatten() {
+                            let p = f.path();
+                            if p.is_file() {
+                                if let Some(ext) = p.extension() {
+                                    if ext == "uproject" {
+                                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                                        let info = UnrealProjectInfo {
+                                            name,
+                                            path: path.to_string_lossy().to_string(),
+                                            uproject_file: p.to_string_lossy().to_string(),
+                                        };
+                                        results.push(info);
+                                        break; // one .uproject is enough to mark the directory as a project
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by name for stable UI
+    results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    let response = UnrealProjectsResponse {
+        base_directory: base_dir.to_string_lossy().to_string(),
+        projects: results,
+    };
+
+    HttpResponse::Ok().json(response)
+}
+
+// ===== Unreal Engines Discovery =====
+
+#[derive(Serialize)]
+struct UnrealEngineInfo {
+    name: String,
+    version: String,
+    path: String,
+    editor_path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UnrealEnginesResponse {
+    base_directory: String,
+    engines: Vec<UnrealEngineInfo>,
+}
+
+fn default_unreal_engines_dir() -> PathBuf {
+    // Default: $HOME/Unreal Engines
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push("UnrealEngines");
+        p
+    } else {
+        PathBuf::from(".")
+    }
+}
+
+fn read_build_version(engine_dir: &Path) -> Option<String> {
+    // Try Engine/Build/Build.version JSON to get Major/Minor/Patch
+    let build_file = engine_dir.join("Engine").join("Build").join("Build.version");
+    if let Ok(bytes) = fs::read(&build_file) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            let major = v.get("MajorVersion").and_then(|x| x.as_u64()).unwrap_or(0);
+            let minor = v.get("MinorVersion").and_then(|x| x.as_u64()).unwrap_or(0);
+            let patch = v.get("PatchVersion").and_then(|x| x.as_u64()).unwrap_or(0);
+            if major > 0 {
+                if patch > 0 {
+                    return Some(format!("{}.{}.{}", major, minor, patch));
+                } else {
+                    return Some(format!("{}.{}", major, minor));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_editor_binary(engine_dir: &Path) -> Option<PathBuf> {
+    // Linux typical paths
+    let candidates = [
+        engine_dir.join("Engine/Binaries/Linux/UnrealEditor"),
+        engine_dir.join("Engine/Binaries/Linux/UE4Editor"),
+        engine_dir.join("Engine/Binaries/Linux/UnrealEditor.app/Contents/MacOS/UnrealEditor"), // in case of mac-like layout copied
+    ];
+    for c in candidates.iter() {
+        if c.exists() && c.is_file() {
+            return Some(c.clone());
+        }
+    }
+    None
+}
+
+fn parse_version_from_name(name: &str) -> Option<String> {
+    // Extract first digit-sequence like 5, 5.2, 5.2.1
+    let mut version = String::new();
+    let mut seen_digit = false;
+    for ch in name.chars() {
+        if ch.is_ascii_digit() {
+            version.push(ch);
+            seen_digit = true;
+        } else if ch == '.' && seen_digit {
+            version.push(ch);
+        } else if seen_digit {
+            break;
+        }
+    }
+    if !version.is_empty() { Some(version) } else { None }
+}
+
+/// Lists installed Unreal Engine directories and attempts to determine their version and editor binary.
+///
+/// Route:
+/// - GET /list-unreal-engines
+///
+/// Query parameters:
+/// - base: Optional base directory containing engine folders. Defaults to $HOME/UnrealEngines.
+///
+/// Notes:
+/// - Version is read from Engine/Build/Build.version when available; otherwise parsed heuristically from folder name.
+/// - Editor path detection currently targets Linux layouts (Engine/Binaries/Linux/UnrealEditor or UE4Editor).
+#[get("/list-unreal-engines")]
+pub async fn list_unreal_engines(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
+    let base_dir = query.get("base").map(|s| PathBuf::from(s)).unwrap_or_else(default_unreal_engines_dir);
+
+    let mut engines: Vec<UnrealEngineInfo> = Vec::new();
+    if base_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&base_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Heuristic: consider any directory that has Engine/Binaries
+                    if path.join("Engine").join("Binaries").is_dir() {
+                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                        let version = read_build_version(&path)
+                            .or_else(|| parse_version_from_name(&name))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let editor_path = find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
+                        engines.push(UnrealEngineInfo {
+                            name,
+                            version,
+                            path: path.to_string_lossy().to_string(),
+                            editor_path,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by version then name
+    engines.sort_by(|a, b| a.version.cmp(&b.version).then(a.name.cmp(&b.name)));
+
+    let resp = UnrealEnginesResponse {
+        base_directory: base_dir.to_string_lossy().to_string(),
+        engines,
+    };
+
+    HttpResponse::Ok().json(resp)
+}
+
+#[derive(Serialize)]
+struct OpenProjectResponse {
+    launched: bool,
+    engine_name: Option<String>,
+    engine_version: Option<String>,
+    editor_path: Option<String>,
+    project: String,
+    message: String,
+}
+
+fn resolve_project_path(project_param: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(project_param);
+    if p.is_file() {
+        return Some(p);
+    }
+    // If directory, look for a single .uproject inside
+    if p.is_dir() {
+        if let Ok(entries) = fs::read_dir(&p) {
+            for e in entries.flatten() {
+                let fp = e.path();
+                if fp.is_file() {
+                    if let Some(ext) = fp.extension() { if ext == "uproject" { return Some(fp); } }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn pick_engine_for_version<'a>(engines: &'a [UnrealEngineInfo], requested: &str) -> Option<&'a UnrealEngineInfo> {
+    // Try exact version match first
+    if let Some(e) = engines.iter().find(|e| e.version == requested) { return Some(e); }
+    // Try prefix match (e.g., request 5.3 and engine 5.3.2)
+    if let Some(e) = engines.iter().find(|e| e.version.starts_with(requested)) { return Some(e); }
+    // Try name contains requested (e.g., UE_5.3)
+    engines.iter().find(|e| e.name.contains(requested))
+}
+
+/// Launches Unreal Editor for a given project using a specified engine version.
+///
+/// Route:
+/// - GET /open-unreal-project
+///
+/// Query parameters:
+/// - project: Name of the project folder, a project directory path, or a .uproject file path.
+/// - version: Engine version to use (e.g., 5.3 or 5.3.2). Exact match is preferred; prefix match is accepted.
+/// - engine_base: Optional base directory to search for engines (defaults to $HOME/UnrealEngines).
+/// - projects_base: Optional base directory containing UE projects when using a project name (defaults to $HOME/Documents/Unreal Projects).
+///
+/// Required fields: project, version. Optional: engine_base, projects_base.
+///
+/// Example requests:
+/// - Using only the project name (uses default projects_base):
+///   curl -G "http://127.0.0.1:8080/open-unreal-project" \
+///        --data-urlencode "project=MyGame" \
+///        --data-urlencode "version=5.3.2"
+/// - Project dir + version, using default engine base:
+///   curl -G "http://127.0.0.1:8080/open-unreal-project" \
+///        --data-urlencode "project=$HOME/Documents/Unreal Projects/MyGame" \
+///        --data-urlencode "version=5.3.2"
+/// - Explicit .uproject path and custom engines/projects base directories:
+///   curl -G "http://127.0.0.1:8080/open-unreal-project" \
+///        --data-urlencode "project=$HOME/Documents/Unreal Projects/MyGame/MyGame.uproject" \
+///        --data-urlencode "version=5.3" \
+///        --data-urlencode "engine_base=$HOME/UnrealEngines" \
+///        --data-urlencode "projects_base=$HOME/Documents/Unreal Projects"
+///
+/// URL-encoded form (for browsers or programmatic use):
+///   /open-unreal-project?project=MyGame&version=5.3.2
+///
+/// Returns:
+/// - 200 OK with JSON describing the launch when the editor was spawned.
+/// - 4xx/5xx with JSON message explaining the error otherwise.
+#[get("/open-unreal-project")]
+pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
+    // Accept either a full path/dir in `project` or a bare project name (folder name)
+    let raw_project = match query.get("project") {
+        Some(p) => p.clone(),
+        None => {
+            return HttpResponse::BadRequest().body("Missing required query parameter: project (name, path to .uproject, or project dir)");
+        }
+    };
+    let version_param = match query.get("version") {
+        Some(v) => v.clone(),
+        None => {
+            return HttpResponse::BadRequest().body("Missing required query parameter: version (e.g., 5.3.2 or 5.3)");
+        }
+    };
+    let engine_base = query.get("engine_base").map(|s| PathBuf::from(s)).unwrap_or_else(default_unreal_engines_dir);
+    let projects_base = query
+        .get("projects_base")
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(default_unreal_projects_dir);
+
+    // First try to resolve as path/dir; if that fails, treat `raw_project` as a project name
+    let project_path = match resolve_project_path(&raw_project) {
+        Some(p) => Some(p),
+        None => {
+            // Interpret as a name: search projects_base/<name> for a .uproject file
+            let candidate_dir = projects_base.join(&raw_project);
+            if candidate_dir.is_dir() {
+                // Find the first .uproject file in that folder
+                if let Ok(entries) = fs::read_dir(&candidate_dir) {
+                    let mut found: Option<PathBuf> = None;
+                    for e in entries.flatten() {
+                        let fp = e.path();
+                        if fp.is_file() {
+                            if let Some(ext) = fp.extension() { if ext == "uproject" { found = Some(fp); break; } }
+                        }
+                    }
+                    found
+                } else { None }
+            } else {
+                None
+            }
+        }
+    };
+
+    let project_path = match project_path {
+        Some(p) => p,
+        None => {
+            return HttpResponse::BadRequest().body("Project not found by path or name, or no .uproject in directory");
+        }
+    };
+
+    // Discover engines
+    let mut engines: Vec<UnrealEngineInfo> = Vec::new();
+    if engine_base.is_dir() {
+        if let Ok(entries) = fs::read_dir(&engine_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.join("Engine").join("Binaries").is_dir() {
+                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                        let version = read_build_version(&path)
+                            .or_else(|| parse_version_from_name(&name))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let editor_path = find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
+                        engines.push(UnrealEngineInfo { name, version, path: path.to_string_lossy().to_string(), editor_path });
+                    }
+                }
+            }
+        }
+    }
+
+    if engines.is_empty() {
+        return HttpResponse::NotFound().body("No Unreal Engine installations found in engine_base");
+    }
+
+    let chosen = match pick_engine_for_version(&engines, &version_param) {
+        Some(e) => e,
+        None => {
+            return HttpResponse::NotFound().body("Requested version not found among discovered engines");
+        }
+    };
+
+    let editor_path = match &chosen.editor_path {
+        Some(p) => PathBuf::from(p),
+        None => return HttpResponse::NotFound().body("Engine found but Editor binary not located"),
+    };
+
+    // Spawn the editor without waiting for it to exit
+    let spawn_res = std::process::Command::new(&editor_path)
+        .arg(&project_path)
+        .spawn();
+
+    match spawn_res {
+        Ok(_child) => {
+            let resp = OpenProjectResponse {
+                launched: true,
+                engine_name: Some(chosen.name.clone()),
+                engine_version: Some(chosen.version.clone()),
+                editor_path: Some(editor_path.to_string_lossy().to_string()),
+                project: project_path.to_string_lossy().to_string(),
+                message: "Launched Unreal Editor".to_string(),
+            };
+            HttpResponse::Ok().json(resp)
+        }
+        Err(e) => {
+            let resp = OpenProjectResponse {
+                launched: false,
+                engine_name: Some(chosen.name.clone()),
+                engine_version: Some(chosen.version.clone()),
+                editor_path: Some(editor_path.to_string_lossy().to_string()),
+                project: project_path.to_string_lossy().to_string(),
+                message: format!("Failed to launch editor: {}", e),
+            };
+            HttpResponse::InternalServerError().json(resp)
+        }
+    }
 }
 
