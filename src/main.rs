@@ -43,6 +43,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::list_unreal_projects)
             .service(api::list_unreal_engines)
             .service(api::open_unreal_project)
+                        .service(api::import_asset)
     })
     .bind("127.0.0.1:8080")?
     .run()

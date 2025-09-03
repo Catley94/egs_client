@@ -58,6 +58,7 @@ use std::io::Read;
 use serde::Serialize;
 use serde_json;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// Directory where the Fab library cache is stored.
 const FAB_CACHE_DIR: &str = "cache";
@@ -688,3 +689,185 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
     }
 }
 
+
+
+/// Request payload for importing a downloaded asset into a UE project.
+#[derive(serde::Deserialize)]
+pub struct ImportAssetRequest {
+    /// Asset folder name as stored under downloads/ (e.g., "Industry Props Pack 6").
+    pub asset_name: String,
+    /// Project identifier: name, project directory, or path to .uproject
+    pub project: String,
+    /// Optional subfolder inside Project/Content to copy into (e.g., "Imported/Industry").
+    pub target_subdir: Option<String>,
+    /// When true, overwrite existing files. When false, skip existing files.
+    pub overwrite: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct ImportAssetResponse {
+    ok: bool,
+    message: String,
+    files_copied: usize,
+    files_skipped: usize,
+    source: String,
+    destination: String,
+    elapsed_ms: u128,
+}
+
+fn resolve_project_dir_from_param(param: &str) -> Option<PathBuf> {
+    // Reuse the existing resolver; it returns a .uproject path when found
+    if let Some(p) = resolve_project_path(param) {
+        return p.parent().map(|p| p.to_path_buf());
+    }
+    // If the param is a directory, check for a .uproject inside and return the dir
+    let p = PathBuf::from(param);
+    if p.is_dir() {
+        // Require that it looks like a UE project (contains a .uproject)
+        if let Ok(entries) = fs::read_dir(&p) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().map_or(false, |ext| ext == "uproject") {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    // As a last resort, try treating it as a project name under default projects dir
+    let candidate = default_unreal_projects_dir().join(param);
+    if candidate.is_dir() {
+        if let Ok(entries) = fs::read_dir(&candidate) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().map_or(false, |ext| ext == "uproject") {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<(usize, usize)> {
+    // Returns (copied, skipped)
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    if !src.exists() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
+    }
+    for entry in walkdir::WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).unwrap();
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if entry.file_type().is_file() {
+            if target.exists() && !overwrite {
+                skipped += 1;
+                continue;
+            }
+            if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
+            fs::copy(path, &target)?;
+            copied += 1;
+        }
+    }
+    Ok((copied, skipped))
+}
+
+/// Import a previously downloaded asset into a UE project by copying its Content.
+///
+/// Route:
+/// - POST /import-asset
+///
+/// JSON body fields:
+/// - asset_name: String — The asset folder name under downloads/ (e.g., "Industry Props Pack 6"). Required.
+/// - project: String — Project identifier. Accepts one of:
+///   - Bare project folder name under the default projects dir (e.g., "MyGame").
+///   - A project directory path (e.g., "$HOME/Documents/Unreal Projects/MyGame").
+///   - A direct path to a .uproject file (e.g., "/path/to/MyGame.uproject"). Required.
+/// - target_subdir: Optional<String> — Subfolder inside Project/Content to copy into (e.g., "Imported/Industry"). Optional.
+/// - overwrite: Optional<bool> — When true, overwrite existing files; when false, keep existing files and count them as skipped. Default false.
+///
+/// Behavior:
+/// - Copies all files from downloads/<asset_name>/data/Content into <Project>/Content (or the provided target_subdir).
+/// - Creates missing directories as needed.
+/// - Skips existing files unless overwrite=true.
+/// - Returns counts for files copied and skipped, along with timing information.
+///
+/// Returns:
+/// - 200 OK with JSON { ok, message, files_copied, files_skipped, source, destination, elapsed_ms } on success.
+/// - 400 Bad Request if required fields are missing or the project cannot be resolved.
+/// - 404 Not Found if the source Content folder for the asset does not exist.
+/// - 500 Internal Server Error on copy failures.
+///
+/// Example requests:
+/// - Basic import using project name (defaults to $HOME/Documents/Unreal Projects):
+///   curl -X POST http://127.0.0.1:8080/import-asset \
+///        -H "Content-Type: application/json" \
+///        -d '{"asset_name":"Industry Props Pack 6","project":"MyGame"}'
+/// - Import into a subfolder and overwrite existing files:
+///   curl -X POST http://127.0.0.1:8080/import-asset \
+///        -H "Content-Type: application/json" \
+///        -d '{"asset_name":"Industry Props Pack 6","project":"MyGame","target_subdir":"Imported/Industry","overwrite":true}'
+/// - Using an explicit .uproject path:
+///   curl -X POST http://127.0.0.1:8080/import-asset \
+///        -H "Content-Type: application/json" \
+///        -d '{"asset_name":"Industry Props Pack 6","project":"$HOME/Documents/Unreal Projects/MyGame/MyGame.uproject"}'
+#[post("/import-asset")]
+pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder {
+    let req = body.into_inner();
+    // Resolve source: downloads/<asset_name>/data/Content
+    let safe_name = req.asset_name.trim();
+    if safe_name.is_empty() {
+        return HttpResponse::BadRequest().body("asset_name is required");
+    }
+    let src_content = Path::new("downloads").join(safe_name).join("data").join("Content");
+    if !src_content.is_dir() {
+        return HttpResponse::NotFound().body(format!("Source Content folder not found: {}", src_content.display()));
+    }
+
+    // Resolve project directory and destination Content
+    let project_dir = match resolve_project_dir_from_param(&req.project) {
+        Some(p) => p,
+        None => return HttpResponse::BadRequest().body("Project could not be resolved to a valid Unreal project"),
+    };
+    let mut dest_content = project_dir.join("Content");
+    if let Some(sub) = &req.target_subdir {
+        let trimmed = sub.trim_matches(['/','\\']);
+        if !trimmed.is_empty() {
+            dest_content = dest_content.join(trimmed);
+        }
+    }
+
+    let overwrite = req.overwrite.unwrap_or(false);
+    let started = Instant::now();
+    match copy_dir_recursive(&src_content, &dest_content, overwrite) {
+        Ok((copied, skipped)) => {
+            let resp = ImportAssetResponse {
+                ok: true,
+                message: format!("Imported '{}' into project at {}", safe_name, project_dir.display()),
+                files_copied: copied,
+                files_skipped: skipped,
+                source: src_content.to_string_lossy().to_string(),
+                destination: dest_content.to_string_lossy().to_string(),
+                elapsed_ms: started.elapsed().as_millis(),
+            };
+            HttpResponse::Ok().json(resp)
+        }
+        Err(e) => {
+            let resp = ImportAssetResponse {
+                ok: false,
+                message: format!("Failed to import: {}", e),
+                files_copied: 0,
+                files_skipped: 0,
+                source: src_content.to_string_lossy().to_string(),
+                destination: dest_content.to_string_lossy().to_string(),
+                elapsed_ms: started.elapsed().as_millis(),
+            };
+            HttpResponse::InternalServerError().json(resp)
+        }
+    }
+}
