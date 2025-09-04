@@ -265,7 +265,10 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
                 let folder_name = title_folder.unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
                 let out_root = std::path::Path::new("downloads").join(folder_name);
                 match utils::download_asset(&dm, url.as_str(), &out_root).await {
-                    Ok(_) => return HttpResponse::Ok().body("Download complete"),
+                    Ok(_) => {
+                        println!("Download complete");
+                        return HttpResponse::Ok().body("Download complete")
+                    },
                     Err(e) => {
                         eprintln!("Download failed from {}: {:?}", url, e);
                         continue;
