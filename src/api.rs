@@ -96,6 +96,24 @@ pub async fn get_fab_list() -> HttpResponse {
     handle_refresh_fab_list().await
 }
 
+#[post("/get-fab-list")]
+pub async fn get_fab_list_post() -> HttpResponse {
+    // Allow clients using POST to hit the same logic
+    let path = std::path::Path::new(FAB_CACHE_FILE);
+    if path.exists() {
+        if let Ok(mut f) = fs::File::open(path) {
+            let mut buf = Vec::new();
+            if f.read_to_end(&mut buf).is_ok() {
+                println!("Using cached FAB list from {} (POST)", FAB_CACHE_FILE);
+                return HttpResponse::Ok()
+                    .content_type("application/json")
+                    .body(buf);
+            }
+        }
+    }
+    handle_refresh_fab_list().await
+}
+
 /// Forces a refresh of the user's Fab library from Epic Games Services and caches it.
 ///
 /// This endpoint performs authentication (attempts cached token first), retrieves account
@@ -874,3 +892,16 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
         }
     }
 }
+
+
+// #[get("/health")]
+// pub async fn health() -> HttpResponse {
+//     HttpResponse::Ok().body("OK")
+// }
+
+// #[get("/")]
+// pub async fn root() -> HttpResponse {
+//     HttpResponse::Ok().body(
+//         "egs_client is running. Try /health, /get-fab-list, or /refresh-fab-list."
+//     )
+// }

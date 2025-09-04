@@ -1,0 +1,26 @@
+# Build artifacts
+/target
+**/target
+
+# Git
+.git
+.gitignore
+
+# IDE/editor
+.vscode
+.idea
+**/*.swp
+
+# Caches and downloads produced by the app
+/cache
+/downloads
+
+# Local files not needed in image
+**/*.log
+
+# Cargo
+.cargo
+*/Cargo.lock
+
+# Node or other unrelated
+node_modules
