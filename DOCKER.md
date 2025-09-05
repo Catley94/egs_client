@@ -29,6 +29,35 @@ Then open:
 - http://localhost:8080/health (health check)
 - http://localhost:8080/get-fab-list
 
+Unreal utilities (examples):
+- List projects: curl -s "http://localhost:8080/list-unreal-projects" | jq
+- List engines:  curl -s "http://localhost:8080/list-unreal-engines" | jq
+- Open project:  curl -G "http://localhost:8080/open-unreal-project" --data-urlencode "project=MyGame" --data-urlencode "version=5.3"
+- Create project from sample (dry run shown):
+  - Using a direct path or folder containing a .uproject
+  - Or using a downloaded asset name under downloads/ (e.g., "Stack O Bot")
+  curl -s -X POST http://localhost:8080/create-unreal-project \
+       -H "Content-Type: application/json" \
+       -d '{
+             "engine_path": null,
+             "template_project": "/path/to/Sample/Sample.uproject",
+             "output_dir": "'$HOME/Documents/Unreal Projects'",
+             "project_name": "MyNewGame",
+             "project_type": "bp",
+             "dry_run": true
+           }' | jq
+
+   # Example using downloads and Stack O Bot by name (the server will search downloads/Stack O Bot for a .uproject)
+   curl -s -X POST http://localhost:8080/create-unreal-project \
+        -H "Content-Type: application/json" \
+        -d '{
+              "asset_name": "Stack O Bot",
+              "output_dir": "'$HOME/Documents/Unreal Projects'",
+              "project_name": "MyStackOBotCopy",
+              "project_type": "bp",
+              "dry_run": true
+            }' | jq
+
 Notes
 - Inside Docker, the image now defaults to binding 0.0.0.0:8080 (via ENV BIND_ADDR). You can still override with `-e PORT=8080` or `-e BIND_ADDR=IP:PORT`.
 - For higher logs: -e RUST_LOG=debug
