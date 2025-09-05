@@ -1,59 +1,53 @@
-# Multi-stage build for egs_client
-# 1) Builder stage compiles the Rust binary in release mode
-# 2) Runtime stage runs the binary on a slim Debian base
-
-# ----- Builder -----
-FROM rust:1.86-bullseye AS builder
+FROM rust:1.89.0-bullseye AS build
 
 WORKDIR /app
 
-# Create a new empty shell project to prime the dependency cache
-# Copy only manifests first to maximize caching
-COPY Cargo.toml Cargo.lock ./
-# Create dummy src to allow "cargo build" to resolve and cache dependencies
-RUN mkdir src && echo "fn main(){}" > src/main.rs
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    clang \
+    lld \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Build to cache dependencies
-RUN cargo build --release || true
+# Build the application  
+RUN --mount=type=bind,source=src,target=src \
+    --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
+    --mount=type=bind,source=Cargo.lock,target=Cargo.lock \
+    --mount=type=cache,target=/app/target/ \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/ \
+    cargo build --locked --release && \
+    cp ./target/release/egs_client /bin/egs_client
 
-# Now copy the actual source
-COPY src ./src
-#COPY Epic-Asset-Manager ./Epic-Asset-Manager
-#COPY assets_reference.txt ./assets_reference.txt
-#COPY workflow.rs ./workflow.rs
+FROM debian:bullseye-slim AS final
 
-# Build the actual project
-RUN cargo build --release
-
-# ----- Runtime -----
-FROM debian:bullseye-slim AS runtime
-
-# Install runtime dependencies if any SSL/certificates needed
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
     ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+    libssl1.1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set a non-root user for safety
-RUN useradd -m -u 10001 appuser
+RUN useradd \
+    --create-home \
+    --shell /bin/sh \
+    --uid 10001 \
+    appuser
 
-WORKDIR /app
+# Copy the binary
+COPY --from=build /bin/egs_client /bin/
 
-# Copy the compiled binary from builder
-COPY --from=builder /app/target/release/egs_client /usr/local/bin/egs_client
-
-# Create directories that the app expects to read/write
-RUN mkdir -p /app/cache /app/downloads
-RUN chown -R appuser:appuser /app
+# Create required directories
+RUN mkdir -p /app/cache /app/downloads && chown -R appuser:appuser /app
 
 USER appuser
+WORKDIR /app
 
-# Expose default Actix port
 EXPOSE 8080
 
-# Default command
-# Ensure service is reachable by default inside Docker
 ENV RUST_LOG=info
 ENV BIND_ADDR=0.0.0.0:8080
 
-# Run the service
-CMD ["/usr/local/bin/egs_client"]
+CMD ["/bin/egs_client"]

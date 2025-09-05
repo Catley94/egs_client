@@ -14,12 +14,14 @@ docker build -t egs_client:latest .
 Run the container
 
 # Map port 8080 and mount local cache/downloads directories if you want persistence
-mkdir -p ./cache ./downloads
+mkdir -p ./cache ./downloads ./cache/home
 
+# Persist credentials by mounting container HOME (tokens saved to $HOME/.egs_client_tokens.json)
 docker run --rm -it \
   -p 8080:8080 \
   -v $(pwd)/cache:/app/cache \
   -v $(pwd)/downloads:/app/downloads \
+  -v $(pwd)/cache/home:/home/appuser \
   -e RUST_LOG=info \
   --name egs_client \
   egs_client:latest
