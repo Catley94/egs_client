@@ -321,6 +321,12 @@ struct UnrealProjectsResponse {
 }
 
 fn default_unreal_projects_dir() -> PathBuf {
+    // Allow override via env var EGS_UNREAL_PROJECTS_DIR
+    if let Ok(val) = std::env::var("EGS_UNREAL_PROJECTS_DIR") {
+        if !val.trim().is_empty() {
+            return PathBuf::from(val);
+        }
+    }
     // Default: $HOME/Documents/Unreal Projects
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
@@ -411,7 +417,13 @@ struct UnrealEnginesResponse {
 }
 
 fn default_unreal_engines_dir() -> PathBuf {
-    // Default: $HOME/Unreal Engines
+    // Allow override via env var EGS_UNREAL_ENGINES_DIR
+    if let Ok(val) = std::env::var("EGS_UNREAL_ENGINES_DIR") {
+        if !val.trim().is_empty() {
+            return PathBuf::from(val);
+        }
+    }
+    // Default: $HOME/UnrealEngines
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
         p.push("UnrealEngines");
@@ -617,13 +629,21 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
         .get("projects_base")
         .map(|s| PathBuf::from(s))
         .unwrap_or_else(default_unreal_projects_dir);
+    println!("Project Base: {}", projects_base.to_string_lossy());
+    println!("Raw Project: {}", raw_project);
+    println!("Engine Base: {}", engine_base.to_string_lossy());
+    println!("Version: {}", version_param);
 
     // First try to resolve as path/dir; if that fails, treat `raw_project` as a project name
     let project_path = match resolve_project_path(&raw_project) {
-        Some(p) => Some(p),
+        Some(p) => {
+            println!("Resolve Project Path: {}", p.to_string_lossy());
+            Some(p)
+        },
         None => {
             // Interpret as a name: search projects_base/<name> for a .uproject file
             let candidate_dir = projects_base.join(&raw_project);
+            println!("Candidate Dir: {}", candidate_dir.to_string_lossy());
             if candidate_dir.is_dir() {
                 // Find the first .uproject file in that folder
                 if let Ok(entries) = fs::read_dir(&candidate_dir) {
@@ -643,7 +663,10 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
     };
 
     let project_path = match project_path {
-        Some(p) => p,
+        Some(p) => {
+            println!("Using project: {}", p.to_string_lossy());
+            p
+        },
         None => {
             return HttpResponse::BadRequest().body("Project not found by path or name, or no .uproject in directory");
         }
@@ -684,11 +707,13 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
         Some(p) => PathBuf::from(p),
         None => return HttpResponse::NotFound().body("Engine found but Editor binary not located"),
     };
+    println!("Using editor: {}", editor_path.to_string_lossy());
 
     // Spawn the editor without waiting for it to exit
     let spawn_res = std::process::Command::new(&editor_path)
         .arg(&project_path)
         .spawn();
+    println!("Spawn Result: {:?}", spawn_res);
 
     match spawn_res {
         Ok(_child) => {
