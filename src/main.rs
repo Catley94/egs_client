@@ -65,6 +65,7 @@ async fn main() -> std::io::Result<()> {
                 .service(api::list_unreal_projects)
                 .service(api::list_unreal_engines)
                 .service(api::open_unreal_project)
+                .service(api::open_unreal_engine)
                 .service(api::import_asset)
                 .service(api::create_unreal_project)
         })

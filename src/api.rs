@@ -546,6 +546,15 @@ struct OpenProjectResponse {
     message: String,
 }
 
+#[derive(Serialize)]
+struct OpenEngineResponse {
+    launched: bool,
+    engine_name: Option<String>,
+    engine_version: Option<String>,
+    editor_path: Option<String>,
+    message: String,
+}
+
 fn resolve_project_path(project_param: &str) -> Option<PathBuf> {
     let p = PathBuf::from(project_param);
     if p.is_file() {
@@ -1317,6 +1326,101 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
         }
         Err(e) => {
             let resp = CreateUnrealProjectResponse { ok: false, message: format!("Failed to launch UnrealEditor to open project: {} (copied {} files, {} skipped)", e, copied_files, skipped_files), command: command_preview, project_path: Some(new_project_dir.to_string_lossy().to_string()) };
+            HttpResponse::InternalServerError().json(resp)
+        }
+    }
+}
+
+
+/// Launches Unreal Editor for a given engine version (no project).
+///
+/// Route:
+/// - GET /open-unreal-engine
+///
+/// Query parameters:
+/// - version: Engine version to use (e.g., 5.3 or 5.3.2). Exact match is preferred; prefix match is accepted.
+/// - engine_base: Optional base directory to search for engines (defaults to $HOME/UnrealEngines).
+///
+/// Returns:
+/// - 200 OK with JSON describing the launch when the editor was spawned.
+/// - 4xx/5xx with JSON message explaining the error otherwise.
+#[get("/open-unreal-engine")]
+pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
+    let version_param = match query.get("version") {
+        Some(v) => v.clone(),
+        None => {
+            return HttpResponse::BadRequest().body("Missing required query parameter: version (e.g., 5.3.2 or 5.3)");
+        }
+    };
+    let engine_base = query
+        .get("engine_base")
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(default_unreal_engines_dir);
+
+    println!("Engine Base: {}", engine_base.to_string_lossy());
+    println!("Version: {}", version_param);
+
+    // Discover engines
+    let mut engines: Vec<UnrealEngineInfo> = Vec::new();
+    if engine_base.is_dir() {
+        if let Ok(entries) = fs::read_dir(&engine_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.join("Engine").join("Binaries").is_dir() {
+                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                        let version = read_build_version(&path)
+                            .or_else(|| parse_version_from_name(&name))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let editor_path = find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
+                        engines.push(UnrealEngineInfo { name, version, path: path.to_string_lossy().to_string(), editor_path });
+                    }
+                }
+            }
+        }
+    }
+
+    if engines.is_empty() {
+        return HttpResponse::NotFound().body("No Unreal Engine installations found in engine_base");
+    }
+
+    let chosen = match pick_engine_for_version(&engines, &version_param) {
+        Some(e) => e,
+        None => {
+            return HttpResponse::NotFound().body("Requested version not found among discovered engines");
+        }
+    };
+
+    let editor_path = match &chosen.editor_path {
+        Some(p) => PathBuf::from(p),
+        None => return HttpResponse::NotFound().body("Engine found but Editor binary not located"),
+    };
+
+    println!("Using editor: {}", editor_path.to_string_lossy());
+
+    // Spawn the editor without waiting for it to exit (no project argument)
+    let spawn_res = std::process::Command::new(&editor_path).spawn();
+    println!("Spawn Result: {:?}", spawn_res);
+
+    match spawn_res {
+        Ok(_child) => {
+            let resp = OpenEngineResponse {
+                launched: true,
+                engine_name: Some(chosen.name.clone()),
+                engine_version: Some(chosen.version.clone()),
+                editor_path: Some(editor_path.to_string_lossy().to_string()),
+                message: "Launched Unreal Editor".to_string(),
+            };
+            HttpResponse::Ok().json(resp)
+        }
+        Err(e) => {
+            let resp = OpenEngineResponse {
+                launched: false,
+                engine_name: Some(chosen.name.clone()),
+                engine_version: Some(chosen.version.clone()),
+                editor_path: Some(editor_path.to_string_lossy().to_string()),
+                message: format!("Failed to launch editor: {}", e),
+            };
             HttpResponse::InternalServerError().json(resp)
         }
     }
