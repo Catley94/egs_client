@@ -838,6 +838,85 @@ fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Resul
     Ok((copied, skipped))
 }
 
+/// Ensure an asset with the given library title is available under downloads/.
+/// If not present, attempts to authenticate, locate the asset in the Fab library,
+/// pick one of its project_versions (latest if possible), and download it.
+/// Returns the asset folder path under downloads/ on success.
+async fn ensure_asset_downloaded_by_name(title: &str) -> Result<PathBuf, String> {
+    // Resolve downloads base similar to other endpoints
+    let mut downloads_base = PathBuf::from("downloads");
+    if !downloads_base.exists() {
+        if let Ok(exe) = std::env::current_exe() { if let Some(exe_dir) = exe.parent() { let alt = exe_dir.join("downloads"); if alt.exists() { downloads_base = alt; } } }
+    }
+    // Check existing (exact/case-insensitive)
+    let mut asset_dir = downloads_base.join(title);
+    if !asset_dir.exists() {
+        if downloads_base.is_dir() {
+            if let Ok(entries) = fs::read_dir(&downloads_base) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                            if fname.eq_ignore_ascii_case(title) { asset_dir = p; break; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if asset_dir.exists() { return Ok(asset_dir); }
+
+    // Authenticate
+    let mut epic = utils::create_epic_games_services();
+    if !utils::try_cached_login(&mut epic).await {
+        let auth_code = utils::get_auth_code();
+        let _ = epic.auth_code(None, Some(auth_code)).await;
+        let _ = epic.login().await;
+        let _ = utils::save_user_details(&epic.user_details());
+    }
+
+    // Load library and find asset by title (case-insensitive exact match)
+    let account = utils::get_account_details(&mut epic).await.ok_or_else(|| "Unable to get account details".to_string())?;
+    let library = utils::get_fab_library_items(&mut epic, account).await.ok_or_else(|| "Unable to fetch Fab library items".to_string())?;
+    let asset = library.results.iter().find(|a| a.title.eq_ignore_ascii_case(title))
+        .ok_or_else(|| format!("Asset '{}' not found in your Fab library", title))?;
+
+    // Pick a project_version entry (prefer the one marked default if such field exists; else last)
+    let version_opt = asset.project_versions.last();
+    let version = match version_opt { Some(v) => v, None => return Err("Selected asset has no project versions to download".to_string()) };
+    let artifact_id = version.artifact_id.clone();
+    let namespace = asset.asset_namespace.clone();
+    let asset_id = asset.asset_id.clone();
+
+    // Fetch manifest(s) and try distribution points
+    let manifest_res = epic.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
+    let manifests = match manifest_res { Ok(m) => m, Err(e) => return Err(format!("Failed to fetch manifest: {:?}", e)) };
+
+    for man in manifests.iter() {
+        for url in man.distribution_point_base_urls.iter() {
+            if let Ok(mut dm) = epic.fab_download_manifest(man.clone(), url).await {
+                // Ensure SourceURL custom field present
+                use std::collections::HashMap;
+                if let Some(ref mut fields) = dm.custom_fields { fields.insert("SourceURL".to_string(), url.clone()); }
+                else { let mut map = HashMap::new(); map.insert("SourceURL".to_string(), url.clone()); dm.custom_fields = Some(map); }
+
+                // Sanitize title for folder name
+                let mut t = asset.title.clone();
+                let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+                t = t.replace(&illegal[..], "_");
+                let t = t.trim().trim_matches('.').to_string();
+                let folder_name = if !t.is_empty() { t } else { format!("{}-{}-{}", namespace, asset_id, artifact_id) };
+                let out_root = downloads_base.join(folder_name);
+                match utils::download_asset(&dm, url.as_str(), &out_root).await {
+                    Ok(_) => { return Ok(out_root); },
+                    Err(e) => { eprintln!("Download failed from {}: {:?}", url, e); continue; }
+                }
+            }
+        }
+    }
+    Err("Unable to download asset from any distribution point".to_string())
+}
+
 /// Import a previously downloaded asset into a UE project by copying its Content.
 ///
 /// Route:
@@ -880,12 +959,45 @@ fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Resul
 #[post("/import-asset")]
 pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder {
     let req = body.into_inner();
-    // Resolve source: downloads/<asset_name>/data/Content
+    // Resolve source: downloads/<asset_name>/data/Content (download first if missing)
     let safe_name = req.asset_name.trim();
     if safe_name.is_empty() {
         return HttpResponse::BadRequest().body("asset_name is required");
     }
-    let src_content = Path::new("downloads").join(safe_name).join("data").join("Content");
+    // Determine downloads base (same logic as create_unreal_project)
+    let mut downloads_base = PathBuf::from("downloads");
+    if !downloads_base.exists() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let alt = exe_dir.join("downloads");
+                if alt.exists() { downloads_base = alt; }
+            }
+        }
+    }
+    // Try exact and case-insensitive match
+    let mut asset_dir = downloads_base.join(safe_name);
+    if !asset_dir.exists() {
+        if downloads_base.is_dir() {
+            if let Ok(entries) = fs::read_dir(&downloads_base) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                            if fname.eq_ignore_ascii_case(safe_name) { asset_dir = p; break; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !asset_dir.exists() {
+        // Attempt to download the asset by name
+        match ensure_asset_downloaded_by_name(safe_name).await {
+            Ok(path) => { asset_dir = path; },
+            Err(err) => { return HttpResponse::NotFound().body(format!("{}", err)); }
+        }
+    }
+    let src_content = asset_dir.join("data").join("Content");
     if !src_content.is_dir() {
         return HttpResponse::NotFound().body(format!("Source Content folder not found: {}", src_content.display()));
     }
@@ -971,6 +1083,8 @@ struct CreateUnrealProjectRequest {
     output_dir: String,
     project_name: String,
     project_type: Option<String>, // "bp" or "cpp"
+    /// When true, launch Unreal Editor to open the created project after copying. Defaults to false.
+    open_after_create: Option<bool>,
     dry_run: Option<bool>,
 }
 
@@ -996,20 +1110,22 @@ struct CreateUnrealProjectResponse {
 /// - output_dir: String — Directory where the new project folder will be created. Required.
 /// - project_name: String — Name of the new project folder to create under `output_dir`. Required.
 /// - project_type: Optional<String> — "bp" for Blueprint-only (adds -NoCompile to skip compiling C++ targets on open) or "cpp". Default: "bp".
+/// - open_after_create: Optional<bool> — When true, the server will launch Unreal Editor to open the created project after copying. Default: false.
 /// - dry_run: Optional<bool> — When true, returns the constructed command without executing UnrealEditor. Optional.
 ///
 /// Behavior:
 /// - Locates UnrealEditor under the given engine_path or auto-discovers from the default engines directory.
 /// - Resolves the template `.uproject` (if a directory is provided, it finds the first `.uproject` inside).
 /// - Ensures `output_dir` exists and computes `<output_dir>/<project_name>` as the destination.
-/// - Constructs the command: `UnrealEditor <Template.uproject> -CopyProject <NewProjectDir> -Game [-NoCompile]`.
+/// - Copies the template project directory to the new location (excluding Binaries/DerivedDataCache/Intermediate/Saved/etc.).
+/// - Builds an "open" command for UnrealEditor but does not run it unless `open_after_create=true`.
 /// - If `dry_run=true`, returns the command preview without launching the editor.
-/// - Otherwise, executes the command and returns success/failure with details.
+/// - Response is returned immediately after project creation (and spawn when applicable), without waiting for Unreal Editor to exit.
 ///
 /// Returns:
 /// - 200 OK with JSON { ok: true, message, command, project_path } on success or dry-run.
 /// - 400 Bad Request if inputs are invalid or UnrealEditor cannot be located.
-/// - 500 Internal Server Error if launching UnrealEditor fails or exits with non-zero status.
+/// - 500 Internal Server Error only for copy/creation failures (opening the editor is optional; failures are reported in message with ok=true).
 ///
 /// Example (dry run):
 /// - Direct template path:
@@ -1163,6 +1279,13 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
                 }
             }
         }
+        // If still missing, attempt to download by name first
+        if !asset_dir.exists() {
+            match ensure_asset_downloaded_by_name(name).await {
+                Ok(p) => { asset_dir = p; },
+                Err(err) => { eprintln!("{}", err); }
+            }
+        }
         // Log what base/asset dir we ended up with for diagnostics
         println!("Searching for .uproject under: {}", asset_dir.to_string_lossy());
         find_uproject_bfs(&asset_dir, 8)
@@ -1310,24 +1433,41 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     if req.dry_run.unwrap_or(false) {
         actions.push(format!("Open with: {}", command_preview));
-        let resp = CreateUnrealProjectResponse { ok: true, message: format!("Dry run: would copy {} files (skipped {}), then open project", copied_files, skipped_files), command: actions.join(" | "), project_path: Some(new_project_dir.to_string_lossy().to_string()) };
+        let resp = CreateUnrealProjectResponse { ok: true, message: format!("Dry run: would copy {} files (skipped {}), then open project{}", copied_files, skipped_files, if req.open_after_create.unwrap_or(false) { " (open_after_create=true)" } else { "" }), command: actions.join(" | "), project_path: Some(new_project_dir.to_string_lossy().to_string()) };
         return HttpResponse::Ok().json(resp);
     }
 
-    // Execute open
-    match cmd.status() {
-        Ok(status) if status.success() => {
-            let resp = CreateUnrealProjectResponse { ok: true, message: format!("Project copied ({} files, {} skipped) and opened", copied_files, skipped_files), command: command_preview, project_path: Some(new_project_dir.to_string_lossy().to_string()) };
-            HttpResponse::Ok().json(resp)
+    // Decide whether to open after create (default false)
+    let open_after = req.open_after_create.unwrap_or(false);
+    if open_after {
+        match cmd.spawn() {
+            Ok(_child) => {
+                let resp = CreateUnrealProjectResponse {
+                    ok: true,
+                    message: format!("Project created ({} files, {} skipped). Unreal Editor is launching...", copied_files, skipped_files),
+                    command: command_preview,
+                    project_path: Some(new_project_dir.to_string_lossy().to_string()),
+                };
+                return HttpResponse::Ok().json(resp);
+            }
+            Err(e) => {
+                let resp = CreateUnrealProjectResponse {
+                    ok: true, // project created successfully; opening is optional
+                    message: format!("Project created ({} files, {} skipped). Failed to launch UnrealEditor: {}", copied_files, skipped_files, e),
+                    command: command_preview,
+                    project_path: Some(new_project_dir.to_string_lossy().to_string()),
+                };
+                return HttpResponse::Ok().json(resp);
+            }
         }
-        Ok(status) => {
-            let resp = CreateUnrealProjectResponse { ok: false, message: format!("UnrealEditor exited with status {} after copy ({} files, {} skipped)", status, copied_files, skipped_files), command: command_preview, project_path: Some(new_project_dir.to_string_lossy().to_string()) };
-            HttpResponse::InternalServerError().json(resp)
-        }
-        Err(e) => {
-            let resp = CreateUnrealProjectResponse { ok: false, message: format!("Failed to launch UnrealEditor to open project: {} (copied {} files, {} skipped)", e, copied_files, skipped_files), command: command_preview, project_path: Some(new_project_dir.to_string_lossy().to_string()) };
-            HttpResponse::InternalServerError().json(resp)
-        }
+    } else {
+        let resp = CreateUnrealProjectResponse {
+            ok: true,
+            message: format!("Project created ({} files, {} skipped). Not opening (open_after_create=false).", copied_files, skipped_files),
+            command: command_preview,
+            project_path: Some(new_project_dir.to_string_lossy().to_string()),
+        };
+        return HttpResponse::Ok().json(resp);
     }
 }
 
