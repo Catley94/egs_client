@@ -65,6 +65,97 @@ const FAB_CACHE_DIR: &str = "cache";
 /// File containing the cached Fab library JSON.
 const FAB_CACHE_FILE: &str = "cache/fab_list.json";
 
+/// Sanitize a title for use as a folder name (mirrors logic in download_asset and refresh).
+fn sanitize_title_for_folder(s: &str) -> String {
+    let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    let replaced = s.replace(&illegal[..], "_");
+    let trimmed = replaced.trim().trim_matches('.').to_string();
+    trimmed
+}
+
+/// Annotate the provided FAB library JSON (as serde_json::Value) with `downloaded` flags
+/// based on the presence of corresponding folders under downloads/.
+/// Returns (total_assets, marked_downloaded, changed).
+fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bool) {
+    let downloads_root = std::path::Path::new("downloads");
+    let mut total_assets = 0usize;
+    let mut marked_downloaded = 0usize;
+    let mut changed = false;
+
+    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
+        for asset in results.iter_mut() {
+            total_assets += 1;
+            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+            let mut asset_downloaded = false;
+            let mut used_title_folder = false;
+
+            if !title.is_empty() {
+                let folder = sanitize_title_for_folder(&title);
+                let path = downloads_root.join(folder);
+                if path.exists() { asset_downloaded = true; used_title_folder = true; }
+            }
+
+            if !asset_downloaded {
+                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                    for ver in versions.iter_mut() {
+                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
+                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
+                            let path = downloads_root.join(folder);
+                            if path.exists() {
+                                asset_downloaded = true;
+                                if let Some(obj) = ver.as_object_mut() {
+                                    if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                        obj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                        changed = true;
+                                    }
+                                }
+                                break;
+                            } else {
+                                if let Some(obj) = ver.as_object_mut() {
+                                    if obj.get("downloaded").is_none() {
+                                        obj.insert("downloaded".into(), serde_json::Value::Bool(false));
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                    for ver in versions.iter_mut() {
+                        if let Some(obj) = ver.as_object_mut() {
+                            if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                obj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if asset_downloaded { marked_downloaded += 1; }
+            if let Some(obj) = asset.as_object_mut() {
+                if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(asset_downloaded) {
+                    obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded));
+                    changed = true;
+                }
+            }
+
+            // If title folder was used, ensure asset-level true and versions true already handled
+            if used_title_folder {
+                // nothing extra
+            }
+        }
+    }
+
+    (total_assets, marked_downloaded, changed)
+}
+
 /// Returns the user's Fab library, preferring a cached JSON file when possible.
 ///
 /// Behavior:
@@ -84,11 +175,30 @@ pub async fn get_fab_list() -> HttpResponse {
         if let Ok(mut f) = fs::File::open(path) {
             let mut buf = Vec::new();
             if f.read_to_end(&mut buf).is_ok() {
-                println!("Using cached FAB list from {}", FAB_CACHE_FILE);
-                // Return raw JSON contents
-                return HttpResponse::Ok()
-                    .content_type("application/json")
-                    .body(buf);
+                // Try to parse and re-annotate downloaded flags based on current filesystem state.
+                match serde_json::from_slice::<serde_json::Value>(&buf) {
+                    Ok(mut val) => {
+                        let (_total, _marked, changed) = annotate_downloaded_flags(&mut val);
+                        if changed {
+                            if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
+                                if let Err(e) = fs::write(FAB_CACHE_FILE, &bytes) {
+                                    eprintln!("Warning: failed to update FAB cache while serving: {}", e);
+                                }
+                            }
+                            println!("Using cached FAB list from {} (re-annotated)", FAB_CACHE_FILE);
+                        } else {
+                            println!("Using cached FAB list from {} (no changes)", FAB_CACHE_FILE);
+                        }
+                        return HttpResponse::Ok().json(val);
+                    }
+                    Err(_) => {
+                        // If parsing failed, fall back to returning raw bytes.
+                        println!("Using cached FAB list from {} (raw)", FAB_CACHE_FILE);
+                        return HttpResponse::Ok()
+                            .content_type("application/json")
+                            .body(buf);
+                    }
+                }
             }
         }
     }
@@ -110,10 +220,28 @@ pub async fn get_fab_list_post() -> HttpResponse {
         if let Ok(mut f) = fs::File::open(path) {
             let mut buf = Vec::new();
             if f.read_to_end(&mut buf).is_ok() {
-                println!("Using cached FAB list from {} (POST)", FAB_CACHE_FILE);
-                return HttpResponse::Ok()
-                    .content_type("application/json")
-                    .body(buf);
+                match serde_json::from_slice::<serde_json::Value>(&buf) {
+                    Ok(mut val) => {
+                        let (_total, _marked, changed) = annotate_downloaded_flags(&mut val);
+                        if changed {
+                            if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
+                                if let Err(e) = fs::write(FAB_CACHE_FILE, &bytes) {
+                                    eprintln!("Warning: failed to update FAB cache while serving (POST): {}", e);
+                                }
+                            }
+                            println!("Using cached FAB list from {} (POST, re-annotated)", FAB_CACHE_FILE);
+                        } else {
+                            println!("Using cached FAB list from {} (POST, no changes)", FAB_CACHE_FILE);
+                        }
+                        return HttpResponse::Ok().json(val);
+                    }
+                    Err(_) => {
+                        println!("Using cached FAB list from {} (POST, raw)", FAB_CACHE_FILE);
+                        return HttpResponse::Ok()
+                            .content_type("application/json")
+                            .body(buf);
+                    }
+                }
             }
         }
     }
@@ -183,18 +311,95 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                 }
                 Some(retrieved_assets) => {
                     println!("Library items length: {:?}", retrieved_assets.results.len());
-                    // Save to cache file for faster subsequent loads and offline-friendly UI.
-                    if let Ok(json_bytes) = serde_json::to_vec_pretty(&retrieved_assets) {
+
+                    // Convert to JSON value so we can enrich with local-only fields like 'downloaded'.
+                    let mut value = match serde_json::to_value(&retrieved_assets) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Warning: failed to convert FAB list to JSON value: {}", e);
+                            return HttpResponse::Ok().json(&retrieved_assets);
+                        }
+                    };
+
+                    // Helper: sanitize title same as download_asset folder naming
+                    fn sanitize_title_for_folder(s: &str) -> String {
+                        let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+                        let replaced = s.replace(&illegal[..], "_");
+                        let trimmed = replaced.trim().trim_matches('.').to_string();
+                        trimmed
+                    }
+
+                    // Compute 'downloaded' flags by checking the downloads/ directory for expected folders.
+                    let downloads_root = std::path::Path::new("downloads");
+                    let mut total_assets = 0usize;
+                    let mut marked_downloaded = 0usize;
+
+                    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
+                        for asset in results.iter_mut() {
+                            total_assets += 1;
+                            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                            let mut asset_downloaded = false;
+
+                            // Title-based folder (preferred by downloader)
+                            if !title.is_empty() {
+                                let folder = sanitize_title_for_folder(&title);
+                                let path = downloads_root.join(folder);
+                                if path.exists() { asset_downloaded = true; }
+                            }
+
+                            // Fallback: version-specific folders using namespace-assetId-artifactId
+                            if !asset_downloaded {
+                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                                    for ver in versions.iter_mut() {
+                                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
+                                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
+                                            let path = downloads_root.join(folder);
+                                            if path.exists() {
+                                                asset_downloaded = true;
+                                                // Also annotate the version itself for finer UI, if desired.
+                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
+                                                break;
+                                            } else {
+                                                // Mark as false for explicitness (optional)
+                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(false)); });
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Title folder exists: mark all versions as downloaded=true as a heuristic
+                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                                    for ver in versions.iter_mut() {
+                                        ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
+                                    }
+                                }
+                            }
+
+                            if asset_downloaded { marked_downloaded += 1; }
+                            // Set the asset-level flag
+                            asset.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded)); });
+                        }
+                    }
+
+                    println!("Annotated {} of {} assets as downloaded based on 'downloads/' folder.", marked_downloaded, total_assets);
+
+                    // Save enriched JSON to cache for faster subsequent loads and offline-friendly UI.
+                    if let Ok(json_bytes) = serde_json::to_vec_pretty(&value) {
                         if let Some(parent) = std::path::Path::new(FAB_CACHE_DIR).parent() { let _ = fs::create_dir_all(parent); }
                         let _ = fs::create_dir_all(FAB_CACHE_DIR);
                         if let Err(e) = fs::write(FAB_CACHE_FILE, &json_bytes) {
                             eprintln!("Warning: failed to write FAB cache: {}", e);
                         }
                     } else {
-                        eprintln!("Warning: failed to serialize FAB library for cache");
+                        eprintln!("Warning: failed to serialize enriched FAB library for cache");
                     }
-                    // Return the library items so the UI can populate list/images
-                    return HttpResponse::Ok().json(&retrieved_assets);
+
+                    // Return enriched library items so the UI can show download indicators.
+                    return HttpResponse::Ok().json(value);
 
                     // Reached only if json() above wasn't returned; keep OK fallback
                     HttpResponse::Ok().finish()
@@ -286,11 +491,91 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
                     }
                 }
 
-                let folder_name = title_folder.unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
+                let used_title_folder = title_folder.is_some();
+                let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
                 let out_root = std::path::Path::new("downloads").join(folder_name);
                 match utils::download_asset(&dm, url.as_str(), &out_root).await {
                     Ok(_) => {
                         println!("Download complete");
+
+                        // After a successful download, update the cached FAB list (if present)
+                        // to mark this asset and specific version as downloaded, so the UI can
+                        // reflect the state without requiring a full refresh.
+                        if let Ok(mut f) = fs::File::open(FAB_CACHE_FILE) {
+                            use std::io::Read as _;
+                            let mut buf = Vec::new();
+                            if f.read_to_end(&mut buf).is_ok() {
+                                if let Ok(mut cache_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                                    let mut changed = false;
+                                    let mut found_asset = false;
+                                    let mut found_version = false;
+                                    if let Some(results) = cache_val.get_mut("results").and_then(|v| v.as_array_mut()) {
+                                        for asset_obj in results.iter_mut() {
+                                            let a_ns = asset_obj.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("");
+                                            let a_id = asset_obj.get("assetId").and_then(|v| v.as_str()).unwrap_or("");
+                                            if a_ns == namespace && a_id == asset_id {
+                                                found_asset = true;
+                                                if let Some(obj) = asset_obj.as_object_mut() {
+                                                    // Ensure asset-level flag is true
+                                                    if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                                        obj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                                        changed = true;
+                                                    }
+                                                }
+                                                if let Some(vers) = asset_obj.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                                                    // If we used a title-based folder, treat all versions as downloaded (matches refresh heuristic)
+                                                    let mark_all_versions = title_folder.is_some();
+                                                    for ver in vers.iter_mut() {
+                                                        if mark_all_versions {
+                                                            if let Some(vobj) = ver.as_object_mut() {
+                                                                if vobj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                                                    vobj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                                                    changed = true;
+                                                                }
+                                                            }
+                                                        } else {
+                                                            let art = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                                                            if art == artifact_id {
+                                                                found_version = true;
+                                                                if let Some(vobj) = ver.as_object_mut() {
+                                                                    if vobj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                                                        vobj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                                                        changed = true;
+                                                                    }
+                                                                }
+                                                                // Even if only one version downloaded, asset-level should already be true
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if !found_asset {
+                                        eprintln!("Note: downloaded asset not found in cached FAB list (ns={}, id={}). Cache not updated.", namespace, asset_id);
+                                    } else if !found_version && title_folder.is_none() {
+                                        eprintln!("Note: matching version (artifact {}) not found under asset {}. Only asset-level flag may be updated.", artifact_id, asset_id);
+                                    }
+                                    if changed {
+                                        if let Ok(bytes) = serde_json::to_vec_pretty(&cache_val) {
+                                            if let Err(e) = fs::write(FAB_CACHE_FILE, &bytes) {
+                                                eprintln!("Warning: failed to update FAB cache after download: {}", e);
+                                            } else {
+                                                println!("Updated FAB cache to mark asset {} / {} (artifact {}) as downloaded.", namespace, asset_id, artifact_id);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Warning: failed to parse existing FAB cache for update");
+                                }
+                            } else {
+                                eprintln!("Warning: failed to read existing FAB cache for update");
+                            }
+                        } else {
+                            eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", FAB_CACHE_FILE);
+                        }
+
                         return HttpResponse::Ok().body("Download complete")
                     },
                     Err(e) => {
