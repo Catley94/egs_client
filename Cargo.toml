@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = "1.47.1"
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 env_logger = "0.11.8"
 egs-api = { git = "https://github.com/Catley94/egs-api-rs", branch = "fab" }
 webbrowser = "1.0.5"
@@ -13,6 +13,9 @@ ureq = { version = "3.0.11", features = ["json"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
 actix-web = "4.11.0"
+actix-web-actors = "4"
+actix = "0.13"
+dashmap = "6"
 anyhow = "1.0.99"
 reqwest = { version = "0.11", features = ["json", "cookies"] }
 sha1 = "0.10"

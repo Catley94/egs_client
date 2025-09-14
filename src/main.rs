@@ -37,6 +37,7 @@ async fn main() -> std::io::Result<()> {
 
     // Ensure runtime directories exist (non-fatal if they cannot be created)
     for dir in ["cache", "downloads"] {
+        // Create cache and downloads directories locally in project folder
         if let Err(e) = std::fs::create_dir_all(dir) {
             eprintln!("Warning: failed to create directory '{}': {}", dir, e);
         }
@@ -68,6 +69,7 @@ async fn main() -> std::io::Result<()> {
                 .service(api::open_unreal_engine)
                 .service(api::import_asset)
                 .service(api::create_unreal_project)
+                .service(api::ws_endpoint)
         })
         .bind(&bind_addr) {
             Ok(server) => {

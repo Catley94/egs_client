@@ -49,7 +49,7 @@
 //!   is implemented in crate::utils and the egs_api crate.
 //! - All endpoints return HttpResponse and are designed for a UI frontend to consume.
 
-use actix_web::{get, post, HttpResponse, web, Responder};
+use actix_web::{get, post, HttpResponse, web, Responder, HttpRequest};
 use colored::Colorize;
 use crate::utils;
 
@@ -59,6 +59,13 @@ use serde::{Serialize, Deserialize};
 use serde_json;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use dashmap::DashMap;
+use tokio::sync::broadcast;
+use actix_web_actors::ws;
+use actix::{Actor, StreamHandler, AsyncContext, ActorContext};
+use std::collections::VecDeque;
 
 /// Directory where the Fab library cache is stored.
 const FAB_CACHE_DIR: &str = "cache";
@@ -436,8 +443,10 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 /// Example (curl):
 /// - curl -v http://localhost:8080/download-asset/89efe5924d3d467c839449ab6ab52e7f/28b7df0e7f5e4202be89a20d362860c3/Industryf4a3f3ff297fV1
 #[get("/download-asset/{namespace}/{asset_id}/{artifact_id}")]
-pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpResponse {
+pub async fn download_asset(path: web::Path<(String, String, String)>, query: web::Query<HashMap<String, String>>) -> HttpResponse {
     let (namespace, asset_id, artifact_id) = path.into_inner();
+    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
+    emit_event(job_id.as_deref(), "download:start", format!("Starting download {}/{}/{}", namespace, asset_id, artifact_id), Some(0.0), None);
 
     let mut epic = utils::create_epic_games_services();
     if !utils::try_cached_login(&mut epic).await {
@@ -452,6 +461,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
     let manifests = match manifest_res {
         Ok(m) => m,
         Err(e) => {
+            emit_event(job_id.as_deref(), "download:error", format!("Failed to fetch manifest: {:?}", e), None, None);
             return HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e));
         }
     };
@@ -494,7 +504,15 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
                 let used_title_folder = title_folder.is_some();
                 let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
                 let out_root = std::path::Path::new("downloads").join(folder_name);
-                match utils::download_asset(&dm, url.as_str(), &out_root).await {
+                // Progress callback: forward file completion percentage over WS
+                let progress_cb: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
+                    let jid = jid.to_string();
+                    let f: utils::ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
+                        emit_event(Some(&jid), "download:progress", format!("{}", msg), Some(pct as f32), None);
+                    });
+                    f
+                });
+                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb).await {
                     Ok(_) => {
                         println!("Download complete");
 
@@ -576,6 +594,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
                             eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", FAB_CACHE_FILE);
                         }
 
+                        emit_event(job_id.as_deref(), "download:complete", "Download complete", Some(100.0), None);
                         return HttpResponse::Ok().body("Download complete")
                     },
                     Err(e) => {
@@ -587,7 +606,8 @@ pub async fn download_asset(path: web::Path<(String, String, String)>) -> HttpRe
         }
     }
 
-    HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
+    emit_event(job_id.as_deref(), "download:error", "Unable to download asset from any distribution point", None, None);
+        HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
 }
 
 // ===== Unreal Projects Discovery =====
@@ -1048,6 +1068,8 @@ pub struct ImportAssetRequest {
     pub target_subdir: Option<String>,
     /// When true, overwrite existing files. When false, skip existing files.
     pub overwrite: Option<bool>,
+    /// Optional job id to stream progress over WebSocket
+    pub job_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1123,11 +1145,58 @@ fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Resul
     Ok((copied, skipped))
 }
 
+fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool, job_id_opt: Option<&str>, phase: &str) -> std::io::Result<(usize, usize)> {
+    // Returns (copied, skipped) while emitting percent progress (0..=100)
+    use walkdir::WalkDir;
+    if !src.exists() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
+    }
+    // Count total files
+    let mut total_files: usize = 0;
+    for entry in WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        if entry.file_type().is_file() { total_files += 1; }
+    }
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    let mut last_percent: u32 = 0;
+    emit_event(job_id_opt, phase, "Starting...", Some(0.0), None);
+    for entry in WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).unwrap();
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if entry.file_type().is_file() {
+            if target.exists() && !overwrite {
+                skipped += 1;
+            } else {
+                if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
+                fs::copy(path, &target)?;
+                copied += 1;
+            }
+            if total_files > 0 {
+                let mut percent = ((copied as f64 / total_files as f64) * 100.0).floor() as u32;
+                if percent > 100 { percent = 100; }
+                if percent != last_percent {
+                    last_percent = percent;
+                    emit_event(job_id_opt, phase, format!("{} / {}", copied, total_files), Some(percent as f32), None);
+                }
+            }
+        }
+    }
+    emit_event(job_id_opt, phase, "Done", Some(100.0), None);
+    Ok((copied, skipped))
+}
+
 /// Ensure an asset with the given library title is available under downloads/.
 /// If not present, attempts to authenticate, locate the asset in the Fab library,
 /// pick one of its project_versions (latest if possible), and download it.
 /// Returns the asset folder path under downloads/ on success.
-async fn ensure_asset_downloaded_by_name(title: &str) -> Result<PathBuf, String> {
+async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&str>, phase_for_progress: &str) -> Result<PathBuf, String> {
     // Resolve downloads base similar to other endpoints
     let mut downloads_base = PathBuf::from("downloads");
     if !downloads_base.exists() {
@@ -1192,7 +1261,15 @@ async fn ensure_asset_downloaded_by_name(title: &str) -> Result<PathBuf, String>
                 let t = t.trim().trim_matches('.').to_string();
                 let folder_name = if !t.is_empty() { t } else { format!("{}-{}-{}", namespace, asset_id, artifact_id) };
                 let out_root = downloads_base.join(folder_name);
-                match utils::download_asset(&dm, url.as_str(), &out_root).await {
+                let progress_cb: Option<utils::ProgressFn> = job_id_opt.map(|jid| {
+                                    let jid = jid.to_string();
+                                    let phase = phase_for_progress.to_string();
+                                    let f: utils::ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
+                                        emit_event(Some(&jid), &phase, msg.clone(), Some(pct as f32), None);
+                                    });
+                                    f
+                                });
+                                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb).await {
                     Ok(_) => { return Ok(out_root); },
                     Err(e) => { eprintln!("Download failed from {}: {:?}", url, e); continue; }
                 }
@@ -1244,6 +1321,8 @@ async fn ensure_asset_downloaded_by_name(title: &str) -> Result<PathBuf, String>
 #[post("/import-asset")]
 pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder {
     let req = body.into_inner();
+    let job_id = req.job_id.clone();
+    emit_event(job_id.as_deref(), "import:start", format!("Importing '{}'", req.asset_name), Some(0.0), None);
     // Resolve source: downloads/<asset_name>/data/Content (download first if missing)
     let safe_name = req.asset_name.trim();
     if safe_name.is_empty() {
@@ -1277,8 +1356,12 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
     }
     if !asset_dir.exists() {
         // Attempt to download the asset by name
-        match ensure_asset_downloaded_by_name(safe_name).await {
-            Ok(path) => { asset_dir = path; },
+        emit_event(job_id.as_deref(), "import:downloading", format!("Downloading missing asset '{}'", safe_name), Some(0.0), None);
+        match ensure_asset_downloaded_by_name(safe_name, job_id.as_deref(), "import:downloading").await {
+            Ok(path) => {
+                asset_dir = path;
+                emit_event(job_id.as_deref(), "import:downloading", format!("Downloaded '{}'", safe_name), Some(100.0), None);
+            },
             Err(err) => { return HttpResponse::NotFound().body(format!("{}", err)); }
         }
     }
@@ -1302,8 +1385,10 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
 
     let overwrite = req.overwrite.unwrap_or(false);
     let started = Instant::now();
-    match copy_dir_recursive(&src_content, &dest_content, overwrite) {
+    emit_event(job_id.as_deref(), "import:copying", format!("Copying files into {}", dest_content.display()), Some(0.0), None);
+    match copy_dir_recursive_with_progress(&src_content, &dest_content, overwrite, job_id.as_deref(), "import:copying") {
         Ok((copied, skipped)) => {
+            emit_event(job_id.as_deref(), "import:complete", format!("Imported '{}'", safe_name), Some(100.0), None);
             let resp = ImportAssetResponse {
                 ok: true,
                 message: format!("Imported '{}' into project at {}", safe_name, project_dir.display()),
@@ -1316,6 +1401,7 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
             HttpResponse::Ok().json(resp)
         }
         Err(e) => {
+            emit_event(job_id.as_deref(), "import:error", format!("Failed to import: {}", e), None, None);
             let resp = ImportAssetResponse {
                 ok: false,
                 message: format!("Failed to import: {}", e),
@@ -1371,6 +1457,8 @@ struct CreateUnrealProjectRequest {
     /// When true, launch Unreal Editor to open the created project after copying. Defaults to false.
     open_after_create: Option<bool>,
     dry_run: Option<bool>,
+    /// Optional job id to stream progress over WebSocket
+    job_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1438,6 +1526,8 @@ struct CreateUnrealProjectResponse {
 pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) -> impl Responder {
     use serde::Deserialize;
     let req = body.into_inner();
+    let job_id = req.job_id.clone();
+    emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
 
     // Validate inputs
     let template_empty = req.template_project.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
@@ -1566,9 +1656,10 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
         }
         // If still missing, attempt to download by name first
         if !asset_dir.exists() {
-            match ensure_asset_downloaded_by_name(name).await {
-                Ok(p) => { asset_dir = p; },
-                Err(err) => { eprintln!("{}", err); }
+            emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), None, None);
+            match ensure_asset_downloaded_by_name(name, job_id.as_deref(), "create:downloading").await {
+                Ok(p) => { asset_dir = p; emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
+                Err(err) => { eprintln!("{}", err); emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None); }
             }
         }
         // Log what base/asset dir we ended up with for diagnostics
@@ -1632,6 +1723,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     println!("[copy-start] {} -> {} ({} files, excluding {:?})",
         template_dir.to_string_lossy(), new_project_dir.to_string_lossy(), total_copy_files, exclude_names);
+    emit_event(job_id.as_deref(), "create:copying", format!("Creating new project at {}", new_project_dir.to_string_lossy()), Some(0.0), None);
 
     let mut copied_files = 0usize;
     let mut skipped_files = 0usize;
@@ -1668,6 +1760,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
                     println!("[copy-progress] {}/{} ({}%) - {}", copied_files, total_copy_files, percent, rel.to_string_lossy());
                     last_logged_percent = percent;
                     last_log_instant = Instant::now();
+                    emit_event(job_id.as_deref(), "create:copying", format!("{} / {}", copied_files, total_copy_files), Some(percent as f32), None);
                 }
             }
         } else if entry.file_type().is_symlink() {
@@ -1678,6 +1771,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     println!("[copy-finish] Copied {} files ({} skipped) to {}",
         copied_files, skipped_files, new_project_dir.to_string_lossy());
+    emit_event(job_id.as_deref(), "create:complete", format!("Project created at {}", new_project_dir.to_string_lossy()), Some(100.0), None);
 
     // Determine new .uproject path
     let new_uproject = new_project_dir.join(format!("{}.uproject", req.project_name));
@@ -1849,4 +1943,113 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
             HttpResponse::InternalServerError().json(resp)
         }
     }
+}
+
+// === WebSocket progress broadcasting ===
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProgressEvent {
+    pub job_id: String,
+    pub phase: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+static JOB_BUS: OnceLock<DashMap<String, broadcast::Sender<String>>> = OnceLock::new();
+static JOB_BUFFER: OnceLock<DashMap<String, VecDeque<String>>> = OnceLock::new();
+
+fn bus() -> &'static DashMap<String, broadcast::Sender<String>> {
+    JOB_BUS.get_or_init(|| DashMap::new())
+}
+
+fn buffer_map() -> &'static DashMap<String, VecDeque<String>> {
+    JOB_BUFFER.get_or_init(|| DashMap::new())
+}
+
+fn get_sender(job_id: &str) -> broadcast::Sender<String> {
+    if let Some(s) = bus().get(job_id) { return s.clone(); }
+    let (tx, _rx) = broadcast::channel::<String>(128);
+    bus().insert(job_id.to_string(), tx.clone());
+    tx
+}
+
+fn push_buffered(job_id: &str, json: String) {
+    let mut entry = buffer_map().entry(job_id.to_string()).or_insert_with(|| VecDeque::with_capacity(32));
+    // Keep up to 32 recent events
+    if entry.len() >= 32 { entry.pop_front(); }
+    entry.push_back(json);
+}
+
+fn take_buffer(job_id: &str) -> Vec<String> {
+    if let Some(mut e) = buffer_map().get_mut(job_id) {
+        let mut out = Vec::new();
+        while let Some(v) = e.pop_front() { out.push(v); }
+        return out;
+    }
+    Vec::new()
+}
+
+fn emit_event(job_id_opt: Option<&str>, phase: &str, message: impl Into<String>, progress: Option<f32>, details: Option<serde_json::Value>) {
+    if let Some(job_id) = job_id_opt {
+        let msg_str: String = message.into();
+        // Debug: log every event emitted
+        let pstr = match progress { Some(p) => format!("{:.1}%", p), None => "null".to_string() };
+        println!("[WS][emit] job_id={} phase={} progress={} msg={}", job_id, phase, pstr, msg_str);
+        let ev = ProgressEvent { job_id: job_id.to_string(), phase: phase.to_string(), message: msg_str, progress, details };
+        if let Ok(json) = serde_json::to_string(&ev) {
+            // Broadcast to current subscribers
+            let _ = get_sender(job_id).send(json.clone());
+            // Also buffer for late subscribers
+            push_buffered(job_id, json);
+        }
+    }
+}
+
+struct WsSession { rx: broadcast::Receiver<String>, job_id: String }
+
+impl Actor for WsSession { type Context = ws::WebsocketContext<Self>; }
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match msg {
+            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
+            Ok(ws::Message::Text(_)) => { /* ignore client messages */ },
+            Ok(ws::Message::Close(_)) => { 
+                println!("[WS] client requested close for job {}", self.job_id);
+                ctx.stop(); 
+            },
+            _ => {}
+        }
+    }
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        println!("[WS] session started for job {}", self.job_id);
+        // First, flush any buffered events for late subscribers
+        for ev in take_buffer(&self.job_id) {
+            ctx.text(ev);
+        }
+        // Then forward new broadcast messages to the websocket
+        let mut rx = self.rx.resubscribe();
+        ctx.run_interval(std::time::Duration::from_millis(500), move |act, ctx| {
+            loop {
+                match rx.try_recv() {
+                    Ok(text) => ctx.text(text),
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Closed) => { ctx.stop(); break; }
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                }
+            }
+        });
+    }
+}
+
+#[get("/ws")]
+pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Query<HashMap<String, String>>) -> Result<HttpResponse, actix_web::Error> {
+    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned()).unwrap_or_else(|| "default".to_string());
+    println!("[WS] connect: job_id={}, peer={}", job_id, req.peer_addr().map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()));
+    let rx = get_sender(&job_id).subscribe();
+    let resp = ws::start(WsSession { rx, job_id }, &req, stream);
+    resp
 }

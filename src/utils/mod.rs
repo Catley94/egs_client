@@ -172,7 +172,9 @@ pub async fn get_fab_library_items(epic_games_services: &mut EpicGames, info: Ac
 ///
 /// Returns Ok on success (including when all files are already present), or an error
 /// when no files could be downloaded and none were up-to-date.
-pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path) -> Result<(), anyhow::Error> {
+pub type ProgressFn = std::sync::Arc<dyn Fn(u32, String) + Send + Sync + 'static>;
+
+pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path, progress: Option<ProgressFn>) -> Result<(), anyhow::Error> {
     use egs_api::api::types::chunk::Chunk;
     use sha1::{Digest, Sha1};
     use std::io::{self, Write};
@@ -204,12 +206,17 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     struct Totals { downloaded: usize, skipped_zero: usize, up_to_date: usize }
     let totals = Arc::new(tokio::sync::Mutex::new(Totals::default()));
 
+        // Track completed files across concurrent tasks to compute overall percent
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     for (file_idx, (filename, file)) in files.into_iter().enumerate() {
         let permit_owner = file_sema.clone().acquire_owned().await.expect("semaphore closed");
         let client = client.clone();
         let temp_dir = temp_dir.clone();
         let out_root = out_root.to_path_buf();
         let totals = totals.clone();
+        let completed = completed.clone();
+        let progress = progress.clone();
         join.spawn(async move {
             let _permit = permit_owner; // hold until task end
             let file_no = file_idx + 1;
@@ -241,14 +248,22 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                 }
             }
             if skip_existing {
-                let mut t = totals.lock().await; t.up_to_date += 1; return Ok::<(), anyhow::Error>(());
+                let mut t = totals.lock().await; t.up_to_date += 1;
+                // Count as completed for overall percent and notify progress
+                let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
+                return Ok::<(), anyhow::Error>(());
             }
 
             // Ensure chunks
             let total_chunks = file.file_chunk_parts.len();
             if total_chunks == 0 {
                 eprintln!("Warning: zero chunk parts listed for file {}; skipping file", filename);
-                let mut t = totals.lock().await; t.skipped_zero += 1; return Ok(());
+                let mut t = totals.lock().await; t.skipped_zero += 1;
+                // Treat as completed for overall progress and notify
+                let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
+                return Ok(());
             }
 
             // Per-file chunk concurrency control
@@ -322,6 +337,9 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
             drop(out);
             std::fs::rename(&tmp_out_path, &out_path)?;
             let mut t = totals.lock().await; t.downloaded += 1;
+            // Count as completed for overall percent and notify
+            let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
             Ok(())
         });
     }
