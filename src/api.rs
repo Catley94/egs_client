@@ -67,10 +67,7 @@ use actix_web_actors::ws;
 use actix::{Actor, StreamHandler, AsyncContext, ActorContext};
 use std::collections::VecDeque;
 
-/// Directory where the Fab library cache is stored.
-const FAB_CACHE_DIR: &str = "cache";
-/// File containing the cached Fab library JSON.
-const FAB_CACHE_FILE: &str = "cache/fab_list.json";
+/// Note: cache and downloads directories are configurable; see helpers below for effective paths.
 
 /// Sanitize a title for use as a folder name (mirrors logic in download_asset and refresh).
 fn sanitize_title_for_folder(s: &str) -> String {
@@ -84,7 +81,7 @@ fn sanitize_title_for_folder(s: &str) -> String {
 /// based on the presence of corresponding folders under downloads/.
 /// Returns (total_assets, marked_downloaded, changed).
 fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bool) {
-    let downloads_root = std::path::Path::new("downloads");
+    let downloads_root = default_downloads_dir();
     let mut total_assets = 0usize;
     let mut marked_downloaded = 0usize;
     let mut changed = false;
@@ -177,9 +174,9 @@ fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bo
 /// - 200 OK with a plain string body in some edge cases (e.g., "No details found")
 #[get("/get-fab-list")]
 pub async fn get_fab_list() -> HttpResponse {
-    let path = std::path::Path::new(FAB_CACHE_FILE);
+    let path = fab_cache_file();
     if path.exists() {
-        if let Ok(mut f) = fs::File::open(path) {
+        if let Ok(mut f) = fs::File::open(&path) {
             let mut buf = Vec::new();
             if f.read_to_end(&mut buf).is_ok() {
                 // Try to parse and re-annotate downloaded flags based on current filesystem state.
@@ -188,19 +185,19 @@ pub async fn get_fab_list() -> HttpResponse {
                         let (_total, _marked, changed) = annotate_downloaded_flags(&mut val);
                         if changed {
                             if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
-                                if let Err(e) = fs::write(FAB_CACHE_FILE, &bytes) {
+                                if let Err(e) = fs::write(&path, &bytes) {
                                     eprintln!("Warning: failed to update FAB cache while serving: {}", e);
                                 }
                             }
-                            println!("Using cached FAB list from {} (re-annotated)", FAB_CACHE_FILE);
+                            println!("Using cached FAB list from {} (re-annotated)", path.display());
                         } else {
-                            println!("Using cached FAB list from {} (no changes)", FAB_CACHE_FILE);
+                            println!("Using cached FAB list from {} (no changes)", path.display());
                         }
                         return HttpResponse::Ok().json(val);
                     }
                     Err(_) => {
                         // If parsing failed, fall back to returning raw bytes.
-                        println!("Using cached FAB list from {} (raw)", FAB_CACHE_FILE);
+                        println!("Using cached FAB list from {} (raw)", path.display());
                         return HttpResponse::Ok()
                             .content_type("application/json")
                             .body(buf);
@@ -222,9 +219,9 @@ pub async fn get_fab_list() -> HttpResponse {
 #[post("/get-fab-list")]
 pub async fn get_fab_list_post() -> HttpResponse {
     // Allow clients using POST to hit the same logic
-    let path = std::path::Path::new(FAB_CACHE_FILE);
+    let path = fab_cache_file();
     if path.exists() {
-        if let Ok(mut f) = fs::File::open(path) {
+        if let Ok(mut f) = fs::File::open(&path) {
             let mut buf = Vec::new();
             if f.read_to_end(&mut buf).is_ok() {
                 match serde_json::from_slice::<serde_json::Value>(&buf) {
@@ -232,18 +229,18 @@ pub async fn get_fab_list_post() -> HttpResponse {
                         let (_total, _marked, changed) = annotate_downloaded_flags(&mut val);
                         if changed {
                             if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
-                                if let Err(e) = fs::write(FAB_CACHE_FILE, &bytes) {
+                                if let Err(e) = fs::write(&path, &bytes) {
                                     eprintln!("Warning: failed to update FAB cache while serving (POST): {}", e);
                                 }
                             }
-                            println!("Using cached FAB list from {} (POST, re-annotated)", FAB_CACHE_FILE);
+                            println!("Using cached FAB list from {} (POST, re-annotated)", path.display());
                         } else {
-                            println!("Using cached FAB list from {} (POST, no changes)", FAB_CACHE_FILE);
+                            println!("Using cached FAB list from {} (POST, no changes)", path.display());
                         }
                         return HttpResponse::Ok().json(val);
                     }
                     Err(_) => {
-                        println!("Using cached FAB list from {} (POST, raw)", FAB_CACHE_FILE);
+                        println!("Using cached FAB list from {} (POST, raw)", path.display());
                         return HttpResponse::Ok()
                             .content_type("application/json")
                             .body(buf);
@@ -337,7 +334,7 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                     }
 
                     // Compute 'downloaded' flags by checking the downloads/ directory for expected folders.
-                    let downloads_root = std::path::Path::new("downloads");
+                    let downloads_root = default_downloads_dir();
                     let mut total_assets = 0usize;
                     let mut marked_downloaded = 0usize;
 
@@ -396,9 +393,9 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 
                     // Save enriched JSON to cache for faster subsequent loads and offline-friendly UI.
                     if let Ok(json_bytes) = serde_json::to_vec_pretty(&value) {
-                        if let Some(parent) = std::path::Path::new(FAB_CACHE_DIR).parent() { let _ = fs::create_dir_all(parent); }
-                        let _ = fs::create_dir_all(FAB_CACHE_DIR);
-                        if let Err(e) = fs::write(FAB_CACHE_FILE, &json_bytes) {
+                        let cache_path = fab_cache_file();
+                        if let Some(parent) = cache_path.parent() { let _ = fs::create_dir_all(parent); }
+                        if let Err(e) = fs::write(&cache_path, &json_bytes) {
                             eprintln!("Warning: failed to write FAB cache: {}", e);
                         }
                     } else {
@@ -503,7 +500,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
 
                 let used_title_folder = title_folder.is_some();
                 let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
-                let out_root = std::path::Path::new("downloads").join(folder_name);
+                let out_root = default_downloads_dir().join(folder_name);
                 // Progress callback: forward file completion percentage over WS
                 let progress_cb: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
                     let jid = jid.to_string();
@@ -519,7 +516,8 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                         // After a successful download, update the cached FAB list (if present)
                         // to mark this asset and specific version as downloaded, so the UI can
                         // reflect the state without requiring a full refresh.
-                        if let Ok(mut f) = fs::File::open(FAB_CACHE_FILE) {
+                        let cache_path = fab_cache_file();
+                                                if let Ok(mut f) = fs::File::open(&cache_path) {
                             use std::io::Read as _;
                             let mut buf = Vec::new();
                             if f.read_to_end(&mut buf).is_ok() {
@@ -577,7 +575,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                                     }
                                     if changed {
                                         if let Ok(bytes) = serde_json::to_vec_pretty(&cache_val) {
-                                            if let Err(e) = fs::write(FAB_CACHE_FILE, &bytes) {
+                                            if let Err(e) = fs::write(&cache_path, &bytes) {
                                                 eprintln!("Warning: failed to update FAB cache after download: {}", e);
                                             } else {
                                                 println!("Updated FAB cache to mark asset {} / {} (artifact {}) as downloaded.", namespace, asset_id, artifact_id);
@@ -591,7 +589,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                                 eprintln!("Warning: failed to read existing FAB cache for update");
                             }
                         } else {
-                            eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", FAB_CACHE_FILE);
+                            eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", cache_path.display());
                         }
 
                         emit_event(job_id.as_deref(), "download:complete", "Download complete", Some(100.0), None);
@@ -625,14 +623,55 @@ struct UnrealProjectsResponse {
     projects: Vec<UnrealProjectInfo>,
 }
 
+fn config_file_path() -> PathBuf {
+    // Store under local cache directory
+    let mut p = PathBuf::from("cache");
+    let _ = std::fs::create_dir_all(&p);
+    p.push("config.json");
+    p
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct PathsConfig {
+    projects_dir: Option<String>,
+    engines_dir: Option<String>,
+    cache_dir: Option<String>,
+    downloads_dir: Option<String>,
+}
+
+fn load_paths_config() -> PathsConfig {
+    let path = config_file_path();
+    if let Ok(mut f) = std::fs::File::open(&path) {
+        let mut s = String::new();
+        if f.read_to_string(&mut s).is_ok() {
+            if let Ok(cfg) = serde_json::from_str::<PathsConfig>(&s) {
+                return cfg;
+            }
+        }
+    }
+    PathsConfig::default()
+}
+
+fn save_paths_config(cfg: &PathsConfig) -> std::io::Result<()> {
+    let path = config_file_path();
+    let s = serde_json::to_string_pretty(cfg).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(path, s)
+}
+
 fn default_unreal_projects_dir() -> PathBuf {
-    // Allow override via env var EGS_UNREAL_PROJECTS_DIR
+    // 1) Config override
+    if let Some(dir) = load_paths_config().projects_dir {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    // 2) Env var override
     if let Ok(val) = std::env::var("EGS_UNREAL_PROJECTS_DIR") {
         if !val.trim().is_empty() {
             return PathBuf::from(val);
         }
     }
-    // Default: $HOME/Documents/Unreal Projects
+    // 3) Default: $HOME/Documents/Unreal Projects
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
         p.push("Documents");
@@ -722,13 +761,19 @@ struct UnrealEnginesResponse {
 }
 
 fn default_unreal_engines_dir() -> PathBuf {
-    // Allow override via env var EGS_UNREAL_ENGINES_DIR
+    // 1) Config override
+    if let Some(dir) = load_paths_config().engines_dir {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    // 2) Env var override
     if let Ok(val) = std::env::var("EGS_UNREAL_ENGINES_DIR") {
         if !val.trim().is_empty() {
             return PathBuf::from(val);
         }
     }
-    // Default: $HOME/UnrealEngines
+    // 3) Default: $HOME/UnrealEngines
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
         p.push("UnrealEngines");
@@ -736,6 +781,32 @@ fn default_unreal_engines_dir() -> PathBuf {
     } else {
         PathBuf::from(".")
     }
+}
+
+fn default_cache_dir() -> PathBuf {
+    if let Some(dir) = load_paths_config().cache_dir {
+        if !dir.trim().is_empty() { return PathBuf::from(dir); }
+    }
+    if let Ok(val) = std::env::var("EGS_CACHE_DIR") {
+        if !val.trim().is_empty() { return PathBuf::from(val); }
+    }
+    PathBuf::from("cache")
+}
+
+fn default_downloads_dir() -> PathBuf {
+    if let Some(dir) = load_paths_config().downloads_dir {
+        if !dir.trim().is_empty() { return PathBuf::from(dir); }
+    }
+    if let Ok(val) = std::env::var("EGS_DOWNLOADS_DIR") {
+        if !val.trim().is_empty() { return PathBuf::from(val); }
+    }
+    PathBuf::from("downloads")
+}
+
+fn fab_cache_file() -> PathBuf {
+    let dir = default_cache_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("fab_list.json")
 }
 
 fn read_build_version(engine_dir: &Path) -> Option<String> {
@@ -2052,4 +2123,65 @@ pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Que
     let rx = get_sender(&job_id).subscribe();
     let resp = ws::start(WsSession { rx, job_id }, &req, stream);
     resp
+}
+
+
+// ===== Configuration: Paths for Projects and Engines =====
+#[derive(Serialize, Deserialize)]
+struct PathsStatus {
+    configured: PathsConfig,
+    effective_projects_dir: String,
+    effective_engines_dir: String,
+    effective_cache_dir: String,
+    effective_downloads_dir: String,
+}
+
+#[get("/config/paths")]
+pub async fn get_paths_config() -> HttpResponse {
+    let cfg = load_paths_config();
+    let status = PathsStatus {
+        configured: cfg.clone(),
+        effective_projects_dir: default_unreal_projects_dir().to_string_lossy().to_string(),
+        effective_engines_dir: default_unreal_engines_dir().to_string_lossy().to_string(),
+        effective_cache_dir: default_cache_dir().to_string_lossy().to_string(),
+        effective_downloads_dir: default_downloads_dir().to_string_lossy().to_string(),
+    };
+    HttpResponse::Ok().json(status)
+}
+
+#[derive(Deserialize)]
+struct PathsUpdate {
+    projects_dir: Option<String>,
+    engines_dir: Option<String>,
+    cache_dir: Option<String>,
+    downloads_dir: Option<String>,
+}
+
+#[post("/config/paths")]
+pub async fn set_paths_config(body: web::Json<PathsUpdate>) -> HttpResponse {
+    let mut cfg = load_paths_config();
+    // Merge updates
+    if let Some(p) = &body.projects_dir {
+        cfg.projects_dir = Some(p.trim().to_string());
+    }
+    if let Some(e) = &body.engines_dir {
+        cfg.engines_dir = Some(e.trim().to_string());
+    }
+    if let Some(c) = &body.cache_dir {
+        cfg.cache_dir = Some(c.trim().to_string());
+    }
+    if let Some(d) = &body.downloads_dir {
+        cfg.downloads_dir = Some(d.trim().to_string());
+    }
+    if let Err(e) = save_paths_config(&cfg) {
+        return HttpResponse::InternalServerError().body(format!("Failed to save config: {}", e));
+    }
+    let status = PathsStatus {
+        configured: cfg.clone(),
+        effective_projects_dir: default_unreal_projects_dir().to_string_lossy().to_string(),
+        effective_engines_dir: default_unreal_engines_dir().to_string_lossy().to_string(),
+        effective_cache_dir: default_cache_dir().to_string_lossy().to_string(),
+        effective_downloads_dir: default_downloads_dir().to_string_lossy().to_string(),
+    };
+    HttpResponse::Ok().json(status)
 }

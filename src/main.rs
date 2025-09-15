@@ -70,6 +70,8 @@ async fn main() -> std::io::Result<()> {
                 .service(api::import_asset)
                 .service(api::create_unreal_project)
                 .service(api::ws_endpoint)
+                .service(api::get_paths_config)
+                .service(api::set_paths_config)
         })
         .bind(&bind_addr) {
             Ok(server) => {
