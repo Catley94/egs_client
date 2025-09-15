@@ -36,7 +36,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     // Ensure runtime directories exist (non-fatal if they cannot be created)
-    for dir in ["cache", "downloads"] {
+    for dir in [api::DEFAULT_CACHE_DIR_NAME, api::DEFAULT_DOWNLOADS_DIR_NAME] {
         // Create cache and downloads directories locally in project folder
         if let Err(e) = std::fs::create_dir_all(dir) {
             eprintln!("Warning: failed to create directory '{}': {}", dir, e);

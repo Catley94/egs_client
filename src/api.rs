@@ -67,6 +67,10 @@ use actix_web_actors::ws;
 use actix::{Actor, StreamHandler, AsyncContext, ActorContext};
 use std::collections::VecDeque;
 
+/// Default directory names used when no config/environment override is provided.
+pub const DEFAULT_CACHE_DIR_NAME: &str = "cache";
+pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
+
 /// Note: cache and downloads directories are configurable; see helpers below for effective paths.
 
 /// Sanitize a title for use as a folder name (mirrors logic in download_asset and refresh).
@@ -624,8 +628,8 @@ struct UnrealProjectsResponse {
 }
 
 fn config_file_path() -> PathBuf {
-    // Store under local cache directory
-    let mut p = PathBuf::from("cache");
+    // Store under local cache directory name (not affected by runtime config)
+    let mut p = PathBuf::from(DEFAULT_CACHE_DIR_NAME);
     let _ = std::fs::create_dir_all(&p);
     p.push("config.json");
     p
@@ -790,7 +794,7 @@ fn default_cache_dir() -> PathBuf {
     if let Ok(val) = std::env::var("EGS_CACHE_DIR") {
         if !val.trim().is_empty() { return PathBuf::from(val); }
     }
-    PathBuf::from("cache")
+    PathBuf::from(DEFAULT_CACHE_DIR_NAME)
 }
 
 fn default_downloads_dir() -> PathBuf {
@@ -800,7 +804,7 @@ fn default_downloads_dir() -> PathBuf {
     if let Ok(val) = std::env::var("EGS_DOWNLOADS_DIR") {
         if !val.trim().is_empty() { return PathBuf::from(val); }
     }
-    PathBuf::from("downloads")
+    PathBuf::from(DEFAULT_DOWNLOADS_DIR_NAME)
 }
 
 fn fab_cache_file() -> PathBuf {
