@@ -67,6 +67,7 @@ use tokio::sync::broadcast;
 use actix_web_actors::ws;
 use actix::{Actor, StreamHandler, AsyncContext, ActorContext};
 use std::collections::VecDeque;
+use crate::utils::get_sender;
 
 /// Default directory names used when no config/environment override is provided.
 pub const DEFAULT_CACHE_DIR_NAME: &str = "cache";
@@ -75,89 +76,6 @@ pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
 /// Note: cache and downloads directories are configurable; see helpers below for effective paths.
 
 
-
-/// Annotate the provided FAB library JSON (as serde_json::Value) with `downloaded` flags
-/// based on the presence of corresponding folders under downloads/.
-/// Returns (total_assets, marked_downloaded, changed).
-fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bool) {
-    let downloads_root = default_downloads_dir();
-    let mut total_assets = 0usize;
-    let mut marked_downloaded = 0usize;
-    let mut changed = false;
-
-    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
-        for asset in results.iter_mut() {
-            total_assets += 1;
-            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-            let mut asset_downloaded = false;
-            let mut used_title_folder = false;
-
-            if !title.is_empty() {
-                let folder = sanitize_title_for_folder(&title);
-                let path = downloads_root.join(folder);
-                if path.exists() { asset_downloaded = true; used_title_folder = true; }
-            }
-
-            if !asset_downloaded {
-                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                    for ver in versions.iter_mut() {
-                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
-                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
-                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
-                            let path = downloads_root.join(folder);
-                            if path.exists() {
-                                asset_downloaded = true;
-                                if let Some(obj) = ver.as_object_mut() {
-                                    if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                        obj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                        changed = true;
-                                    }
-                                }
-                                break;
-                            } else {
-                                if let Some(obj) = ver.as_object_mut() {
-                                    if obj.get("downloaded").is_none() {
-                                        obj.insert("downloaded".into(), serde_json::Value::Bool(false));
-                                        changed = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                    for ver in versions.iter_mut() {
-                        if let Some(obj) = ver.as_object_mut() {
-                            if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                obj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if asset_downloaded { marked_downloaded += 1; }
-            if let Some(obj) = asset.as_object_mut() {
-                if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(asset_downloaded) {
-                    obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded));
-                    changed = true;
-                }
-            }
-
-            // If title folder was used, ensure asset-level true and versions true already handled
-            if used_title_folder {
-                // nothing extra
-            }
-        }
-    }
-
-    (total_assets, marked_downloaded, changed)
-}
 
 /// Returns the user's Fab library, preferring a cached JSON file when possible.
 ///
@@ -173,7 +91,7 @@ fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bo
 /// - 200 OK with a plain string body in some edge cases (e.g., "No details found")
 #[get("/get-fab-list")]
 pub async fn get_fab_list() -> HttpResponse {
-    let path = fab_cache_file();
+    let path = utils::fab_cache_file();
     if path.exists() {
         if let Ok(mut f) = fs::File::open(&path) {
             let mut buf = Vec::new();
@@ -181,7 +99,7 @@ pub async fn get_fab_list() -> HttpResponse {
                 // Try to parse and re-annotate downloaded flags based on current filesystem state.
                 match serde_json::from_slice::<serde_json::Value>(&buf) {
                     Ok(mut val) => {
-                        let (_total, _marked, changed) = annotate_downloaded_flags(&mut val);
+                        let (_total, _marked, changed) = utils::annotate_downloaded_flags(&mut val);
                         if changed {
                             if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
                                 if let Err(e) = fs::write(&path, &bytes) {
@@ -206,49 +124,16 @@ pub async fn get_fab_list() -> HttpResponse {
         }
     }
     // Fallback: refresh and cache
-    handle_refresh_fab_list().await
+    utils::handle_refresh_fab_list().await
 }
 
-/// POST alias for clients that send POST requests to the same endpoint.
-///
-/// Route:
-/// - POST /get-fab-list
-///
-/// Behavior and Returns: same as GET /get-fab-list.
-#[post("/get-fab-list")]
-pub async fn get_fab_list_post() -> HttpResponse {
-    // Allow clients using POST to hit the same logic
-    let path = fab_cache_file();
-    if path.exists() {
-        if let Ok(mut f) = fs::File::open(&path) {
-            let mut buf = Vec::new();
-            if f.read_to_end(&mut buf).is_ok() {
-                match serde_json::from_slice::<serde_json::Value>(&buf) {
-                    Ok(mut val) => {
-                        let (_total, _marked, changed) = annotate_downloaded_flags(&mut val);
-                        if changed {
-                            if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
-                                if let Err(e) = fs::write(&path, &bytes) {
-                                    eprintln!("Warning: failed to update FAB cache while serving (POST): {}", e);
-                                }
-                            }
-                            println!("Using cached FAB list from {} (POST, re-annotated)", path.display());
-                        } else {
-                            println!("Using cached FAB list from {} (POST, no changes)", path.display());
-                        }
-                        return HttpResponse::Ok().json(val);
-                    }
-                    Err(_) => {
-                        println!("Using cached FAB list from {} (POST, raw)", path.display());
-                        return HttpResponse::Ok()
-                            .content_type("application/json")
-                            .body(buf);
-                    }
-                }
-            }
-        }
-    }
-    handle_refresh_fab_list().await
+#[get("/ws")]
+pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Query<HashMap<String, String>>) -> Result<HttpResponse, actix_web::Error> {
+    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned()).unwrap_or_else(|| "default".to_string());
+    println!("[WS] connect: job_id={}, peer={}", job_id, req.peer_addr().map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()));
+    let rx = get_sender(&job_id).subscribe();
+    let resp = ws::start(utils::WsSession { rx, job_id }, &req, stream);
+    resp
 }
 
 /// Forces a refresh of the user's Fab library from Epic Games Services and caches it.
@@ -262,155 +147,10 @@ pub async fn get_fab_list_post() -> HttpResponse {
 #[get("/refresh-fab-list")]
 pub async fn refresh_fab_list() -> HttpResponse {
     // Respond with the list of Fab Assets and cache it
-
-    handle_refresh_fab_list().await
+    utils::handle_refresh_fab_list().await
 }
 
-/// Internal helper that refreshes the Fab library without initiating any downloads.
-///
-/// Returns a summary list (JSON) suitable for UI consumption. On auth failure or missing
-/// details, returns a 200 OK with a short message body describing the condition.
-pub async fn handle_refresh_fab_list() -> HttpResponse {
-    // Try to use cached refresh token first (no browser, no copy-paste)
-    let mut epic_games_services = utils::create_epic_games_services();
-    if !utils::try_cached_login(&mut epic_games_services).await {
-        // If cached token is not available or invalid, we obtain an auth code from utils,
-        // perform the code exchange, and then finalize login. On success, tokens are saved
-        // for subsequent runs to avoid repeating the interactive step.
-        let auth_code = utils::get_auth_code();
 
-        // Authenticate with Epic's Servers using the code
-        if epic_games_services.auth_code(None, Some(auth_code)).await {
-            println!("Logged in with provided auth code");
-        }
-        // Complete login; the SDK should populate user_details with tokens
-        let _ = epic_games_services.login().await;
-
-        // Persist tokens for next runs
-        let ud = epic_games_services.user_details();
-        if let Err(e) = utils::save_user_details(&ud) {
-            eprintln!("Warning: failed to save tokens: {}", e);
-        }
-    } else {
-        println!("Logged in using cached credentials");
-    }
-
-    // Fetch account details and additional account info (for diagnostics/UI display).
-    let details = utils::get_account_details(&mut epic_games_services).await;
-    let info = utils::get_account_info(&mut epic_games_services).await;
-
-    // Retrieve the Fab library based on the acquired account details.
-    match details {
-        None => {
-            println!("No details found");
-            HttpResponse::Ok().body("No details found")
-        }
-        Some(info) => {
-            let assets = utils::get_fab_library_items(&mut epic_games_services, info).await;
-            match assets {
-                None => {
-                    println!("No assets found");
-                    HttpResponse::Ok().body("No assets found")
-                }
-                Some(retrieved_assets) => {
-                    println!("Library items length: {:?}", retrieved_assets.results.len());
-
-                    // Convert to JSON value so we can enrich with local-only fields like 'downloaded'.
-                    let mut value = match serde_json::to_value(&retrieved_assets) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("Warning: failed to convert FAB list to JSON value: {}", e);
-                            return HttpResponse::Ok().json(&retrieved_assets);
-                        }
-                    };
-
-                    // Helper: sanitize title same as download_asset folder naming
-                    fn sanitize_title_for_folder(s: &str) -> String {
-                        let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-                        let replaced = s.replace(&illegal[..], "_");
-                        let trimmed = replaced.trim().trim_matches('.').to_string();
-                        trimmed
-                    }
-
-                    // Compute 'downloaded' flags by checking the downloads/ directory for expected folders.
-                    let downloads_root = default_downloads_dir();
-                    let mut total_assets = 0usize;
-                    let mut marked_downloaded = 0usize;
-
-                    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
-                        for asset in results.iter_mut() {
-                            total_assets += 1;
-                            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-                            let mut asset_downloaded = false;
-
-                            // Title-based folder (preferred by downloader)
-                            if !title.is_empty() {
-                                let folder = sanitize_title_for_folder(&title);
-                                let path = downloads_root.join(folder);
-                                if path.exists() { asset_downloaded = true; }
-                            }
-
-                            // Fallback: version-specific folders using namespace-assetId-artifactId
-                            if !asset_downloaded {
-                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                                    for ver in versions.iter_mut() {
-                                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
-                                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
-                                            let path = downloads_root.join(folder);
-                                            if path.exists() {
-                                                asset_downloaded = true;
-                                                // Also annotate the version itself for finer UI, if desired.
-                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
-                                                break;
-                                            } else {
-                                                // Mark as false for explicitness (optional)
-                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(false)); });
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Title folder exists: mark all versions as downloaded=true as a heuristic
-                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                                    for ver in versions.iter_mut() {
-                                        ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
-                                    }
-                                }
-                            }
-
-                            if asset_downloaded { marked_downloaded += 1; }
-                            // Set the asset-level flag
-                            asset.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded)); });
-                        }
-                    }
-
-                    println!("Annotated {} of {} assets as downloaded based on 'downloads/' folder.", marked_downloaded, total_assets);
-
-                    // Save enriched JSON to cache for faster subsequent loads and offline-friendly UI.
-                    if let Ok(json_bytes) = serde_json::to_vec_pretty(&value) {
-                        let cache_path = fab_cache_file();
-                        if let Some(parent) = cache_path.parent() { let _ = fs::create_dir_all(parent); }
-                        if let Err(e) = fs::write(&cache_path, &json_bytes) {
-                            eprintln!("Warning: failed to write FAB cache: {}", e);
-                        }
-                    } else {
-                        eprintln!("Warning: failed to serialize enriched FAB library for cache");
-                    }
-
-                    // Return enriched library items so the UI can show download indicators.
-                    return HttpResponse::Ok().json(value);
-
-                    // Reached only if json() above wasn't returned; keep OK fallback
-                    HttpResponse::Ok().finish()
-                }
-            }
-        }
-    }
-}
 
 /// Downloads a specific Fab asset to the local filesystem.
 ///
@@ -442,7 +182,7 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 pub async fn download_asset(path: web::Path<(String, String, String)>, query: web::Query<HashMap<String, String>>) -> HttpResponse {
     let (namespace, asset_id, artifact_id) = path.into_inner();
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
-    emit_event(job_id.as_deref(), "download:start", format!("Starting download {}/{}/{}", namespace, asset_id, artifact_id), Some(0.0), None);
+    utils::emit_event(job_id.as_deref(), "download:start", format!("Starting download {}/{}/{}", namespace, asset_id, artifact_id), Some(0.0), None);
 
     let mut epic = utils::create_epic_games_services();
     if !utils::try_cached_login(&mut epic).await {
@@ -457,7 +197,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
     let manifests = match manifest_res {
         Ok(m) => m,
         Err(e) => {
-            emit_event(job_id.as_deref(), "download:error", format!("Failed to fetch manifest: {:?}", e), None, None);
+            utils::emit_event(job_id.as_deref(), "download:error", format!("Failed to fetch manifest: {:?}", e), None, None);
             return HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e));
         }
     };
@@ -499,12 +239,12 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
 
                 let used_title_folder = title_folder.is_some();
                 let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
-                let out_root = default_downloads_dir().join(folder_name);
+                let out_root = utils::default_downloads_dir().join(folder_name);
                 // Progress callback: forward file completion percentage over WS
                 let progress_cb: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
                     let jid = jid.to_string();
                     let f: utils::ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
-                        emit_event(Some(&jid), "download:progress", format!("{}", msg), Some(pct as f32), None);
+                        utils::emit_event(Some(&jid), "download:progress", format!("{}", msg), Some(pct as f32), None);
                     });
                     f
                 });
@@ -515,7 +255,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                         // After a successful download, update the cached FAB list (if present)
                         // to mark this asset and specific version as downloaded, so the UI can
                         // reflect the state without requiring a full refresh.
-                        let cache_path = fab_cache_file();
+                        let cache_path = utils::fab_cache_file();
                                                 if let Ok(mut f) = fs::File::open(&cache_path) {
                             use std::io::Read as _;
                             let mut buf = Vec::new();
@@ -591,7 +331,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                             eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", cache_path.display());
                         }
 
-                        emit_event(job_id.as_deref(), "download:complete", "Download complete", Some(100.0), None);
+                        utils::emit_event(job_id.as_deref(), "download:complete", "Download complete", Some(100.0), None);
                         return HttpResponse::Ok().body("Download complete")
                     },
                     Err(e) => {
@@ -603,83 +343,8 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
         }
     }
 
-    emit_event(job_id.as_deref(), "download:error", "Unable to download asset from any distribution point", None, None);
+    utils::emit_event(job_id.as_deref(), "download:error", "Unable to download asset from any distribution point", None, None);
         HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
-}
-
-// ===== Unreal Projects Discovery =====
-
-#[derive(Serialize)]
-struct UnrealProjectInfo {
-    name: String,
-    path: String,
-    uproject_file: String,
-}
-
-#[derive(Serialize)]
-struct UnrealProjectsResponse {
-    base_directory: String,
-    projects: Vec<UnrealProjectInfo>,
-}
-
-fn config_file_path() -> PathBuf {
-    // Store under local cache directory name (not affected by runtime config)
-    let mut p = PathBuf::from(DEFAULT_CACHE_DIR_NAME);
-    let _ = std::fs::create_dir_all(&p);
-    p.push("config.json");
-    p
-}
-
-#[derive(Serialize, Deserialize, Default, Clone)]
-struct PathsConfig {
-    projects_dir: Option<String>,
-    engines_dir: Option<String>,
-    cache_dir: Option<String>,
-    downloads_dir: Option<String>,
-}
-
-fn load_paths_config() -> PathsConfig {
-    let path = config_file_path();
-    if let Ok(mut f) = std::fs::File::open(&path) {
-        let mut s = String::new();
-        if f.read_to_string(&mut s).is_ok() {
-            if let Ok(cfg) = serde_json::from_str::<PathsConfig>(&s) {
-                return cfg;
-            }
-        }
-    }
-    PathsConfig::default()
-}
-
-fn save_paths_config(cfg: &PathsConfig) -> std::io::Result<()> {
-    let path = config_file_path();
-    let s = serde_json::to_string_pretty(cfg).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(path, s)
-}
-
-fn default_unreal_projects_dir() -> PathBuf {
-    // 1) Config override
-    if let Some(dir) = load_paths_config().projects_dir {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    // 2) Env var override
-    if let Ok(val) = std::env::var("EGS_UNREAL_PROJECTS_DIR") {
-        if !val.trim().is_empty() {
-            return PathBuf::from(val);
-        }
-    }
-    // 3) Default: $HOME/Documents/Unreal Projects
-    if let Ok(home) = std::env::var("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push("Documents");
-        p.push("Unreal Projects");
-        p
-    } else {
-        // Fallback to current dir if HOME not set
-        PathBuf::from(".")
-    }
 }
 
 /// Lists Unreal Engine projects under a base directory by detecting folders containing a .uproject file.
@@ -698,9 +363,9 @@ fn default_unreal_projects_dir() -> PathBuf {
 #[get("/list-unreal-projects")]
 pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
     // Optional query parameter: ?base=/custom/path
-    let base_dir = query.get("base").map(|s| PathBuf::from(s)).unwrap_or_else(default_unreal_projects_dir);
+    let base_dir = query.get("base").map(|s| PathBuf::from(s)).unwrap_or_else(utils::default_unreal_projects_dir);
     
-    let mut results: Vec<UnrealProjectInfo> = Vec::new();
+    let mut results: Vec<models::UnrealProjectInfo> = Vec::new();
 
     if base_dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&base_dir) {
@@ -715,7 +380,7 @@ pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<St
                                 if let Some(ext) = p.extension() {
                                     if ext == "uproject" {
                                         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                                        let info = UnrealProjectInfo {
+                                        let info = models::UnrealProjectInfo {
                                             name,
                                             path: path.to_string_lossy().to_string(),
                                             uproject_file: p.to_string_lossy().to_string(),
@@ -735,7 +400,7 @@ pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<St
     // Sort by name for stable UI
     results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
-    let response = UnrealProjectsResponse {
+    let response = models::UnrealProjectsResponse {
         base_directory: base_dir.to_string_lossy().to_string(),
         projects: results,
     };
@@ -745,120 +410,11 @@ pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<St
 
 // ===== Unreal Engines Discovery =====
 
-#[derive(Serialize)]
-struct UnrealEngineInfo {
-    name: String,
-    version: String,
-    path: String,
-    editor_path: Option<String>,
-}
 
-#[derive(Serialize)]
-struct UnrealEnginesResponse {
-    base_directory: String,
-    engines: Vec<UnrealEngineInfo>,
-}
 
-fn default_unreal_engines_dir() -> PathBuf {
-    // 1) Config override
-    if let Some(dir) = load_paths_config().engines_dir {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    // 2) Env var override
-    if let Ok(val) = std::env::var("EGS_UNREAL_ENGINES_DIR") {
-        if !val.trim().is_empty() {
-            return PathBuf::from(val);
-        }
-    }
-    // 3) Default: $HOME/UnrealEngines
-    if let Ok(home) = std::env::var("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push("UnrealEngines");
-        p
-    } else {
-        PathBuf::from(".")
-    }
-}
 
-fn default_cache_dir() -> PathBuf {
-    if let Some(dir) = load_paths_config().cache_dir {
-        if !dir.trim().is_empty() { return PathBuf::from(dir); }
-    }
-    if let Ok(val) = std::env::var("EGS_CACHE_DIR") {
-        if !val.trim().is_empty() { return PathBuf::from(val); }
-    }
-    PathBuf::from(DEFAULT_CACHE_DIR_NAME)
-}
 
-fn default_downloads_dir() -> PathBuf {
-    if let Some(dir) = load_paths_config().downloads_dir {
-        if !dir.trim().is_empty() { return PathBuf::from(dir); }
-    }
-    if let Ok(val) = std::env::var("EGS_DOWNLOADS_DIR") {
-        if !val.trim().is_empty() { return PathBuf::from(val); }
-    }
-    PathBuf::from(DEFAULT_DOWNLOADS_DIR_NAME)
-}
 
-fn fab_cache_file() -> PathBuf {
-    let dir = default_cache_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("fab_list.json")
-}
-
-fn read_build_version(engine_dir: &Path) -> Option<String> {
-    // Try Engine/Build/Build.version JSON to get Major/Minor/Patch
-    let build_file = engine_dir.join("Engine").join("Build").join("Build.version");
-    if let Ok(bytes) = fs::read(&build_file) {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            let major = v.get("MajorVersion").and_then(|x| x.as_u64()).unwrap_or(0);
-            let minor = v.get("MinorVersion").and_then(|x| x.as_u64()).unwrap_or(0);
-            let patch = v.get("PatchVersion").and_then(|x| x.as_u64()).unwrap_or(0);
-            if major > 0 {
-                if patch > 0 {
-                    return Some(format!("{}.{}.{}", major, minor, patch));
-                } else {
-                    return Some(format!("{}.{}", major, minor));
-                }
-            }
-        }
-    }
-    None
-}
-
-fn find_editor_binary(engine_dir: &Path) -> Option<PathBuf> {
-    // Linux typical paths
-    let candidates = [
-        engine_dir.join("Engine/Binaries/Linux/UnrealEditor"),
-        engine_dir.join("Engine/Binaries/Linux/UE4Editor"),
-        engine_dir.join("Engine/Binaries/Linux/UnrealEditor.app/Contents/MacOS/UnrealEditor"), // in case of mac-like layout copied
-    ];
-    for c in candidates.iter() {
-        if c.exists() && c.is_file() {
-            return Some(c.clone());
-        }
-    }
-    None
-}
-
-fn parse_version_from_name(name: &str) -> Option<String> {
-    // Extract first digit-sequence like 5, 5.2, 5.2.1
-    let mut version = String::new();
-    let mut seen_digit = false;
-    for ch in name.chars() {
-        if ch.is_ascii_digit() {
-            version.push(ch);
-            seen_digit = true;
-        } else if ch == '.' && seen_digit {
-            version.push(ch);
-        } else if seen_digit {
-            break;
-        }
-    }
-    if !version.is_empty() { Some(version) } else { None }
-}
 
 /// Lists installed Unreal Engine directories and attempts to determine their version and editor binary.
 ///
@@ -873,9 +429,9 @@ fn parse_version_from_name(name: &str) -> Option<String> {
 /// - Editor path detection currently targets Linux layouts (Engine/Binaries/Linux/UnrealEditor or UE4Editor).
 #[get("/list-unreal-engines")]
 pub async fn list_unreal_engines(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
-    let base_dir = query.get("base").map(|s| PathBuf::from(s)).unwrap_or_else(default_unreal_engines_dir);
+    let base_dir = query.get("base").map(|s| PathBuf::from(s)).unwrap_or_else(utils::default_unreal_engines_dir);
 
-    let mut engines: Vec<UnrealEngineInfo> = Vec::new();
+    let mut engines: Vec<models::UnrealEngineInfo> = Vec::new();
     if base_dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&base_dir) {
             for entry in entries.flatten() {
@@ -884,11 +440,11 @@ pub async fn list_unreal_engines(query: web::Query<std::collections::HashMap<Str
                     // Heuristic: consider any directory that has Engine/Binaries
                     if path.join("Engine").join("Binaries").is_dir() {
                         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                        let version = read_build_version(&path)
-                            .or_else(|| parse_version_from_name(&name))
+                        let version = utils::read_build_version(&path)
+                            .or_else(|| utils::parse_version_from_name(&name))
                             .unwrap_or_else(|| "unknown".to_string());
-                        let editor_path = find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
-                        engines.push(UnrealEngineInfo {
+                        let editor_path = utils::find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
+                        engines.push(models::UnrealEngineInfo {
                             name,
                             version,
                             path: path.to_string_lossy().to_string(),
@@ -903,7 +459,7 @@ pub async fn list_unreal_engines(query: web::Query<std::collections::HashMap<Str
     // Sort by version then name
     engines.sort_by(|a, b| a.version.cmp(&b.version).then(a.name.cmp(&b.name)));
 
-    let resp = UnrealEnginesResponse {
+    let resp = models::UnrealEnginesResponse {
         base_directory: base_dir.to_string_lossy().to_string(),
         engines,
     };
@@ -911,52 +467,6 @@ pub async fn list_unreal_engines(query: web::Query<std::collections::HashMap<Str
     HttpResponse::Ok().json(resp)
 }
 
-#[derive(Serialize)]
-struct OpenProjectResponse {
-    launched: bool,
-    engine_name: Option<String>,
-    engine_version: Option<String>,
-    editor_path: Option<String>,
-    project: String,
-    message: String,
-}
-
-#[derive(Serialize)]
-struct OpenEngineResponse {
-    launched: bool,
-    engine_name: Option<String>,
-    engine_version: Option<String>,
-    editor_path: Option<String>,
-    message: String,
-}
-
-fn resolve_project_path(project_param: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(project_param);
-    if p.is_file() {
-        return Some(p);
-    }
-    // If directory, look for a single .uproject inside
-    if p.is_dir() {
-        if let Ok(entries) = fs::read_dir(&p) {
-            for e in entries.flatten() {
-                let fp = e.path();
-                if fp.is_file() {
-                    if let Some(ext) = fp.extension() { if ext == "uproject" { return Some(fp); } }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn pick_engine_for_version<'a>(engines: &'a [UnrealEngineInfo], requested: &str) -> Option<&'a UnrealEngineInfo> {
-    // Try exact version match first
-    if let Some(e) = engines.iter().find(|e| e.version == requested) { return Some(e); }
-    // Try prefix match (e.g., request 5.3 and engine 5.3.2)
-    if let Some(e) = engines.iter().find(|e| e.version.starts_with(requested)) { return Some(e); }
-    // Try name contains requested (e.g., UE_5.3)
-    engines.iter().find(|e| e.name.contains(requested))
-}
 
 /// Launches Unreal Editor for a given project using a specified engine version.
 ///
@@ -1008,18 +518,18 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
             return HttpResponse::BadRequest().body("Missing required query parameter: version (e.g., 5.3.2 or 5.3)");
         }
     };
-    let engine_base = query.get("engine_base").map(|s| PathBuf::from(s)).unwrap_or_else(default_unreal_engines_dir);
+    let engine_base = query.get("engine_base").map(|s| PathBuf::from(s)).unwrap_or_else(utils::default_unreal_engines_dir);
     let projects_base = query
         .get("projects_base")
         .map(|s| PathBuf::from(s))
-        .unwrap_or_else(default_unreal_projects_dir);
+        .unwrap_or_else(utils::default_unreal_projects_dir);
     println!("Project Base: {}", projects_base.to_string_lossy());
     println!("Raw Project: {}", raw_project);
     println!("Engine Base: {}", engine_base.to_string_lossy());
     println!("Version: {}", version_param);
 
     // First try to resolve as path/dir; if that fails, treat `raw_project` as a project name
-    let project_path = match resolve_project_path(&raw_project) {
+    let project_path = match utils::resolve_project_path(&raw_project) {
         Some(p) => {
             println!("Resolve Project Path: {}", p.to_string_lossy());
             Some(p)
@@ -1057,7 +567,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
     };
 
     // Discover engines
-    let mut engines: Vec<UnrealEngineInfo> = Vec::new();
+    let mut engines: Vec<models::UnrealEngineInfo> = Vec::new();
     if engine_base.is_dir() {
         if let Ok(entries) = fs::read_dir(&engine_base) {
             for entry in entries.flatten() {
@@ -1065,11 +575,11 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
                 if path.is_dir() {
                     if path.join("Engine").join("Binaries").is_dir() {
                         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                        let version = read_build_version(&path)
-                            .or_else(|| parse_version_from_name(&name))
+                        let version = utils::read_build_version(&path)
+                            .or_else(|| utils::parse_version_from_name(&name))
                             .unwrap_or_else(|| "unknown".to_string());
-                        let editor_path = find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
-                        engines.push(UnrealEngineInfo { name, version, path: path.to_string_lossy().to_string(), editor_path });
+                        let editor_path = utils::find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
+                        engines.push(models::UnrealEngineInfo { name, version, path: path.to_string_lossy().to_string(), editor_path });
                     }
                 }
             }
@@ -1080,7 +590,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
         return HttpResponse::NotFound().body("No Unreal Engine installations found in engine_base");
     }
 
-    let chosen = match pick_engine_for_version(&engines, &version_param) {
+    let chosen = match utils::pick_engine_for_version(&engines, &version_param) {
         Some(e) => e,
         None => {
             return HttpResponse::NotFound().body("Requested version not found among discovered engines");
@@ -1101,7 +611,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
 
     match spawn_res {
         Ok(_child) => {
-            let resp = OpenProjectResponse {
+            let resp = models::OpenProjectResponse {
                 launched: true,
                 engine_name: Some(chosen.name.clone()),
                 engine_version: Some(chosen.version.clone()),
@@ -1112,7 +622,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
             HttpResponse::Ok().json(resp)
         }
         Err(e) => {
-            let resp = OpenProjectResponse {
+            let resp = models::OpenProjectResponse {
                 launched: false,
                 engine_name: Some(chosen.name.clone()),
                 engine_version: Some(chosen.version.clone()),
@@ -1123,230 +633,6 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
             HttpResponse::InternalServerError().json(resp)
         }
     }
-}
-
-
-
-/// Request payload for importing a downloaded asset into a UE project.
-#[derive(serde::Deserialize)]
-pub struct ImportAssetRequest {
-    /// Asset folder name as stored under downloads/ (e.g., "Industry Props Pack 6").
-    pub asset_name: String,
-    /// Project identifier: name, project directory, or path to .uproject
-    pub project: String,
-    /// Optional subfolder inside Project/Content to copy into (e.g., "Imported/Industry").
-    pub target_subdir: Option<String>,
-    /// When true, overwrite existing files. When false, skip existing files.
-    pub overwrite: Option<bool>,
-    /// Optional job id to stream progress over WebSocket
-    pub job_id: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ImportAssetResponse {
-    ok: bool,
-    message: String,
-    files_copied: usize,
-    files_skipped: usize,
-    source: String,
-    destination: String,
-    elapsed_ms: u128,
-}
-
-fn resolve_project_dir_from_param(param: &str) -> Option<PathBuf> {
-    // Reuse the existing resolver; it returns a .uproject path when found
-    if let Some(p) = resolve_project_path(param) {
-        return p.parent().map(|p| p.to_path_buf());
-    }
-    // If the param is a directory, check for a .uproject inside and return the dir
-    let p = PathBuf::from(param);
-    if p.is_dir() {
-        // Require that it looks like a UE project (contains a .uproject)
-        if let Ok(entries) = fs::read_dir(&p) {
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.extension().map_or(false, |ext| ext == "uproject") {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    // As a last resort, try treating it as a project name under default projects dir
-    let candidate = default_unreal_projects_dir().join(param);
-    if candidate.is_dir() {
-        if let Ok(entries) = fs::read_dir(&candidate) {
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.extension().map_or(false, |ext| ext == "uproject") {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<(usize, usize)> {
-    // Returns (copied, skipped)
-    let mut copied = 0usize;
-    let mut skipped = 0usize;
-    if !src.exists() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
-    }
-    for entry in walkdir::WalkDir::new(src).follow_links(false) {
-        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let path = entry.path();
-        let rel = path.strip_prefix(src).unwrap();
-        let target = dst.join(rel);
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&target)?;
-            continue;
-        }
-        if entry.file_type().is_file() {
-            if target.exists() && !overwrite {
-                skipped += 1;
-                continue;
-            }
-            if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
-            fs::copy(path, &target)?;
-            copied += 1;
-        }
-    }
-    Ok((copied, skipped))
-}
-
-fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool, job_id_opt: Option<&str>, phase: &str) -> std::io::Result<(usize, usize)> {
-    // Returns (copied, skipped) while emitting percent progress (0..=100)
-    use walkdir::WalkDir;
-    if !src.exists() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
-    }
-    // Count total files
-    let mut total_files: usize = 0;
-    for entry in WalkDir::new(src).follow_links(false) {
-        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        if entry.file_type().is_file() { total_files += 1; }
-    }
-    let mut copied = 0usize;
-    let mut skipped = 0usize;
-    let mut last_percent: u32 = 0;
-    emit_event(job_id_opt, phase, "Starting...", Some(0.0), None);
-    for entry in WalkDir::new(src).follow_links(false) {
-        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let path = entry.path();
-        let rel = path.strip_prefix(src).unwrap();
-        let target = dst.join(rel);
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&target)?;
-            continue;
-        }
-        if entry.file_type().is_file() {
-            if target.exists() && !overwrite {
-                skipped += 1;
-            } else {
-                if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
-                fs::copy(path, &target)?;
-                copied += 1;
-            }
-            if total_files > 0 {
-                let mut percent = ((copied as f64 / total_files as f64) * 100.0).floor() as u32;
-                if percent > 100 { percent = 100; }
-                if percent != last_percent {
-                    last_percent = percent;
-                    emit_event(job_id_opt, phase, format!("{} / {}", copied, total_files), Some(percent as f32), None);
-                }
-            }
-        }
-    }
-    emit_event(job_id_opt, phase, "Done", Some(100.0), None);
-    Ok((copied, skipped))
-}
-
-/// Ensure an asset with the given library title is available under downloads/.
-/// If not present, attempts to authenticate, locate the asset in the Fab library,
-/// pick one of its project_versions (latest if possible), and download it.
-/// Returns the asset folder path under downloads/ on success.
-async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&str>, phase_for_progress: &str) -> Result<PathBuf, String> {
-    // Resolve downloads base similar to other endpoints
-    let mut downloads_base = PathBuf::from("downloads");
-    if !downloads_base.exists() {
-        if let Ok(exe) = std::env::current_exe() { if let Some(exe_dir) = exe.parent() { let alt = exe_dir.join("downloads"); if alt.exists() { downloads_base = alt; } } }
-    }
-    // Check existing (exact/case-insensitive)
-    let mut asset_dir = downloads_base.join(title);
-    if !asset_dir.exists() {
-        if downloads_base.is_dir() {
-            if let Ok(entries) = fs::read_dir(&downloads_base) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                            if fname.eq_ignore_ascii_case(title) { asset_dir = p; break; }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if asset_dir.exists() { return Ok(asset_dir); }
-
-    // Authenticate
-    let mut epic = utils::create_epic_games_services();
-    if !utils::try_cached_login(&mut epic).await {
-        let auth_code = utils::get_auth_code();
-        let _ = epic.auth_code(None, Some(auth_code)).await;
-        let _ = epic.login().await;
-        let _ = utils::save_user_details(&epic.user_details());
-    }
-
-    // Load library and find asset by title (case-insensitive exact match)
-    let account = utils::get_account_details(&mut epic).await.ok_or_else(|| "Unable to get account details".to_string())?;
-    let library = utils::get_fab_library_items(&mut epic, account).await.ok_or_else(|| "Unable to fetch Fab library items".to_string())?;
-    let asset = library.results.iter().find(|a| a.title.eq_ignore_ascii_case(title))
-        .ok_or_else(|| format!("Asset '{}' not found in your Fab library", title))?;
-
-    // Pick a project_version entry (prefer the one marked default if such field exists; else last)
-    let version_opt = asset.project_versions.last();
-    let version = match version_opt { Some(v) => v, None => return Err("Selected asset has no project versions to download".to_string()) };
-    let artifact_id = version.artifact_id.clone();
-    let namespace = asset.asset_namespace.clone();
-    let asset_id = asset.asset_id.clone();
-
-    // Fetch manifest(s) and try distribution points
-    let manifest_res = epic.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
-    let manifests = match manifest_res { Ok(m) => m, Err(e) => return Err(format!("Failed to fetch manifest: {:?}", e)) };
-
-    for man in manifests.iter() {
-        for url in man.distribution_point_base_urls.iter() {
-            if let Ok(mut dm) = epic.fab_download_manifest(man.clone(), url).await {
-                // Ensure SourceURL custom field present
-                use std::collections::HashMap;
-                if let Some(ref mut fields) = dm.custom_fields { fields.insert("SourceURL".to_string(), url.clone()); }
-                else { let mut map = HashMap::new(); map.insert("SourceURL".to_string(), url.clone()); dm.custom_fields = Some(map); }
-
-                // Sanitize title for folder name
-                let mut t = asset.title.clone();
-                let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-                t = t.replace(&illegal[..], "_");
-                let t = t.trim().trim_matches('.').to_string();
-                let folder_name = if !t.is_empty() { t } else { format!("{}-{}-{}", namespace, asset_id, artifact_id) };
-                let out_root = downloads_base.join(folder_name);
-                let progress_cb: Option<utils::ProgressFn> = job_id_opt.map(|jid| {
-                                    let jid = jid.to_string();
-                                    let phase = phase_for_progress.to_string();
-                                    let f: utils::ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
-                                        emit_event(Some(&jid), &phase, msg.clone(), Some(pct as f32), None);
-                                    });
-                                    f
-                                });
-                                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb).await {
-                    Ok(_) => { return Ok(out_root); },
-                    Err(e) => { eprintln!("Download failed from {}: {:?}", url, e); continue; }
-                }
-            }
-        }
-    }
-    Err("Unable to download asset from any distribution point".to_string())
 }
 
 /// Import a previously downloaded asset into a UE project by copying its Content.
@@ -1389,10 +675,10 @@ async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&str>, 
 ///        -H "Content-Type: application/json" \
 ///        -d '{"asset_name":"Industry Props Pack 6","project":"$HOME/Documents/Unreal Projects/MyGame/MyGame.uproject"}'
 #[post("/import-asset")]
-pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder {
+pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl Responder {
     let req = body.into_inner();
     let job_id = req.job_id.clone();
-    emit_event(job_id.as_deref(), "import:start", format!("Importing '{}'", req.asset_name), Some(0.0), None);
+    utils::emit_event(job_id.as_deref(), "import:start", format!("Importing '{}'", req.asset_name), Some(0.0), None);
     // Resolve source: downloads/<asset_name>/data/Content (download first if missing)
     let safe_name = req.asset_name.trim();
     if safe_name.is_empty() {
@@ -1426,11 +712,11 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
     }
     if !asset_dir.exists() {
         // Attempt to download the asset by name
-        emit_event(job_id.as_deref(), "import:downloading", format!("Downloading missing asset '{}'", safe_name), Some(0.0), None);
-        match ensure_asset_downloaded_by_name(safe_name, job_id.as_deref(), "import:downloading").await {
+        utils::emit_event(job_id.as_deref(), "import:downloading", format!("Downloading missing asset '{}'", safe_name), Some(0.0), None);
+        match utils::ensure_asset_downloaded_by_name(safe_name, job_id.as_deref(), "import:downloading").await {
             Ok(path) => {
                 asset_dir = path;
-                emit_event(job_id.as_deref(), "import:downloading", format!("Downloaded '{}'", safe_name), Some(100.0), None);
+                utils::emit_event(job_id.as_deref(), "import:downloading", format!("Downloaded '{}'", safe_name), Some(100.0), None);
             },
             Err(err) => { return HttpResponse::NotFound().body(format!("{}", err)); }
         }
@@ -1441,7 +727,7 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
     }
 
     // Resolve project directory and destination Content
-    let project_dir = match resolve_project_dir_from_param(&req.project) {
+    let project_dir = match utils::resolve_project_dir_from_param(&req.project) {
         Some(p) => p,
         None => return HttpResponse::BadRequest().body("Project could not be resolved to a valid Unreal project"),
     };
@@ -1455,11 +741,11 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
 
     let overwrite = req.overwrite.unwrap_or(false);
     let started = Instant::now();
-    emit_event(job_id.as_deref(), "import:copying", format!("Copying files into {}", dest_content.display()), Some(0.0), None);
-    match copy_dir_recursive_with_progress(&src_content, &dest_content, overwrite, job_id.as_deref(), "import:copying") {
+    utils::emit_event(job_id.as_deref(), "import:copying", format!("Copying files into {}", dest_content.display()), Some(0.0), None);
+    match utils::copy_dir_recursive_with_progress(&src_content, &dest_content, overwrite, job_id.as_deref(), "import:copying") {
         Ok((copied, skipped)) => {
-            emit_event(job_id.as_deref(), "import:complete", format!("Imported '{}'", safe_name), Some(100.0), None);
-            let resp = ImportAssetResponse {
+            utils::emit_event(job_id.as_deref(), "import:complete", format!("Imported '{}'", safe_name), Some(100.0), None);
+            let resp = models::ImportAssetResponse {
                 ok: true,
                 message: format!("Imported '{}' into project at {}", safe_name, project_dir.display()),
                 files_copied: copied,
@@ -1471,8 +757,8 @@ pub async fn import_asset(body: web::Json<ImportAssetRequest>) -> impl Responder
             HttpResponse::Ok().json(resp)
         }
         Err(e) => {
-            emit_event(job_id.as_deref(), "import:error", format!("Failed to import: {}", e), None, None);
-            let resp = ImportAssetResponse {
+            utils::emit_event(job_id.as_deref(), "import:error", format!("Failed to import: {}", e), None, None);
+            let resp = models::ImportAssetResponse {
                 ok: false,
                 message: format!("Failed to import: {}", e),
                 files_copied: 0,
@@ -1513,31 +799,7 @@ pub async fn root() -> HttpResponse {
     )
 }
 
-#[derive(Serialize, Deserialize)]
-struct CreateUnrealProjectRequest {
-    engine_path: Option<String>,
-    /// Path to a template/sample .uproject OR a directory containing one. If omitted, provide asset_name.
-    template_project: Option<String>,
-    /// Convenience: name of a downloaded asset under downloads/ (e.g., "Stack O Bot").
-    /// When provided and template_project is empty, the server will search downloads/<asset_name>/ recursively for a .uproject.
-    asset_name: Option<String>,
-    output_dir: String,
-    project_name: String,
-    project_type: Option<String>, // "bp" or "cpp"
-    /// When true, launch Unreal Editor to open the created project after copying. Defaults to false.
-    open_after_create: Option<bool>,
-    dry_run: Option<bool>,
-    /// Optional job id to stream progress over WebSocket
-    job_id: Option<String>,
-}
 
-#[derive(Serialize)]
-struct CreateUnrealProjectResponse {
-    ok: bool,
-    message: String,
-    command: String,
-    project_path: Option<String>,
-}
 
 /// Creates a new Unreal Engine project from a template/sample `.uproject` using UnrealEditor `-CopyProject`.
 ///
@@ -1593,11 +855,11 @@ struct CreateUnrealProjectResponse {
 ///              "dry_run": true
 ///            }' | jq
 #[post("/create-unreal-project")]
-pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) -> impl Responder {
+pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRequest>) -> impl Responder {
     use serde::Deserialize;
     let req = body.into_inner();
     let job_id = req.job_id.clone();
-    emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
+    utils::emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
 
     // Validate inputs
     let template_empty = req.template_project.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
@@ -1615,7 +877,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     // Resolve engine path: try provided, else discover from default engines dir and pick latest
     let engine_path = if let Some(p) = req.engine_path.clone() { PathBuf::from(p) } else {
-        let base = default_unreal_engines_dir();
+        let base = utils::default_unreal_engines_dir();
         // pick the first engine when sorted descending by version string
         let mut engines: Vec<PathBuf> = Vec::new();
         if base.is_dir() { if let Ok(entries) = fs::read_dir(&base) { for e in entries.flatten() { let p = e.path(); if p.is_dir() && p.join("Engine").exists() { engines.push(p); } } } }
@@ -1726,10 +988,10 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
         }
         // If still missing, attempt to download by name first
         if !asset_dir.exists() {
-            emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), None, None);
-            match ensure_asset_downloaded_by_name(name, job_id.as_deref(), "create:downloading").await {
-                Ok(p) => { asset_dir = p; emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
-                Err(err) => { eprintln!("{}", err); emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None); }
+            utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), None, None);
+            match utils::ensure_asset_downloaded_by_name(name, job_id.as_deref(), "create:downloading").await {
+                Ok(p) => { asset_dir = p; utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
+                Err(err) => { eprintln!("{}", err); utils::emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None); }
             }
         }
         // Log what base/asset dir we ended up with for diagnostics
@@ -1793,7 +1055,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     println!("[copy-start] {} -> {} ({} files, excluding {:?})",
         template_dir.to_string_lossy(), new_project_dir.to_string_lossy(), total_copy_files, exclude_names);
-    emit_event(job_id.as_deref(), "create:copying", format!("Creating new project at {}", new_project_dir.to_string_lossy()), Some(0.0), None);
+    utils::emit_event(job_id.as_deref(), "create:copying", format!("Creating new project at {}", new_project_dir.to_string_lossy()), Some(0.0), None);
 
     let mut copied_files = 0usize;
     let mut skipped_files = 0usize;
@@ -1830,7 +1092,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
                     println!("[copy-progress] {}/{} ({}%) - {}", copied_files, total_copy_files, percent, rel.to_string_lossy());
                     last_logged_percent = percent;
                     last_log_instant = Instant::now();
-                    emit_event(job_id.as_deref(), "create:copying", format!("{} / {}", copied_files, total_copy_files), Some(percent as f32), None);
+                    utils::emit_event(job_id.as_deref(), "create:copying", format!("{} / {}", copied_files, total_copy_files), Some(percent as f32), None);
                 }
             }
         } else if entry.file_type().is_symlink() {
@@ -1841,7 +1103,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     println!("[copy-finish] Copied {} files ({} skipped) to {}",
         copied_files, skipped_files, new_project_dir.to_string_lossy());
-    emit_event(job_id.as_deref(), "create:complete", format!("Project created at {}", new_project_dir.to_string_lossy()), Some(100.0), None);
+    utils::emit_event(job_id.as_deref(), "create:complete", format!("Project created at {}", new_project_dir.to_string_lossy()), Some(100.0), None);
 
     // Determine new .uproject path
     let new_uproject = new_project_dir.join(format!("{}.uproject", req.project_name));
@@ -1882,7 +1144,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
 
     if req.dry_run.unwrap_or(false) {
         actions.push(format!("Open with: {}", command_preview));
-        let resp = CreateUnrealProjectResponse { ok: true, message: format!("Dry run: would copy {} files (skipped {}), then open project{}", copied_files, skipped_files, if req.open_after_create.unwrap_or(false) { " (open_after_create=true)" } else { "" }), command: actions.join(" | "), project_path: Some(new_project_dir.to_string_lossy().to_string()) };
+        let resp = models::CreateUnrealProjectResponse { ok: true, message: format!("Dry run: would copy {} files (skipped {}), then open project{}", copied_files, skipped_files, if req.open_after_create.unwrap_or(false) { " (open_after_create=true)" } else { "" }), command: actions.join(" | "), project_path: Some(new_project_dir.to_string_lossy().to_string()) };
         return HttpResponse::Ok().json(resp);
     }
 
@@ -1891,7 +1153,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
     if open_after {
         match cmd.spawn() {
             Ok(_child) => {
-                let resp = CreateUnrealProjectResponse {
+                let resp = models::CreateUnrealProjectResponse {
                     ok: true,
                     message: format!("Project created ({} files, {} skipped). Unreal Editor is launching...", copied_files, skipped_files),
                     command: command_preview,
@@ -1900,7 +1162,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
                 return HttpResponse::Ok().json(resp);
             }
             Err(e) => {
-                let resp = CreateUnrealProjectResponse {
+                let resp = models::CreateUnrealProjectResponse {
                     ok: true, // project created successfully; opening is optional
                     message: format!("Project created ({} files, {} skipped). Failed to launch UnrealEditor: {}", copied_files, skipped_files, e),
                     command: command_preview,
@@ -1910,7 +1172,7 @@ pub async fn create_unreal_project(body: web::Json<CreateUnrealProjectRequest>) 
             }
         }
     } else {
-        let resp = CreateUnrealProjectResponse {
+        let resp = models::CreateUnrealProjectResponse {
             ok: true,
             message: format!("Project created ({} files, {} skipped). Not opening (open_after_create=false).", copied_files, skipped_files),
             command: command_preview,
@@ -1944,13 +1206,13 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
     let engine_base = query
         .get("engine_base")
         .map(|s| PathBuf::from(s))
-        .unwrap_or_else(default_unreal_engines_dir);
+        .unwrap_or_else(utils::default_unreal_engines_dir);
 
     println!("Engine Base: {}", engine_base.to_string_lossy());
     println!("Version: {}", version_param);
 
     // Discover engines
-    let mut engines: Vec<UnrealEngineInfo> = Vec::new();
+    let mut engines: Vec<models::UnrealEngineInfo> = Vec::new();
     if engine_base.is_dir() {
         if let Ok(entries) = fs::read_dir(&engine_base) {
             for entry in entries.flatten() {
@@ -1958,11 +1220,11 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
                 if path.is_dir() {
                     if path.join("Engine").join("Binaries").is_dir() {
                         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                        let version = read_build_version(&path)
-                            .or_else(|| parse_version_from_name(&name))
+                        let version = utils::read_build_version(&path)
+                            .or_else(|| utils::parse_version_from_name(&name))
                             .unwrap_or_else(|| "unknown".to_string());
-                        let editor_path = find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
-                        engines.push(UnrealEngineInfo { name, version, path: path.to_string_lossy().to_string(), editor_path });
+                        let editor_path = utils::find_editor_binary(&path).map(|p| p.to_string_lossy().to_string());
+                        engines.push(models::UnrealEngineInfo { name, version, path: path.to_string_lossy().to_string(), editor_path });
                     }
                 }
             }
@@ -1973,7 +1235,7 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
         return HttpResponse::NotFound().body("No Unreal Engine installations found in engine_base");
     }
 
-    let chosen = match pick_engine_for_version(&engines, &version_param) {
+    let chosen = match utils::pick_engine_for_version(&engines, &version_param) {
         Some(e) => e,
         None => {
             return HttpResponse::NotFound().body("Requested version not found among discovered engines");
@@ -1993,7 +1255,7 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
 
     match spawn_res {
         Ok(_child) => {
-            let resp = OpenEngineResponse {
+            let resp = models::OpenEngineResponse {
                 launched: true,
                 engine_name: Some(chosen.name.clone()),
                 engine_version: Some(chosen.version.clone()),
@@ -2003,7 +1265,7 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
             HttpResponse::Ok().json(resp)
         }
         Err(e) => {
-            let resp = OpenEngineResponse {
+            let resp = models::OpenEngineResponse {
                 launched: false,
                 engine_name: Some(chosen.name.clone()),
                 engine_version: Some(chosen.version.clone()),
@@ -2015,150 +1277,24 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
     }
 }
 
-// === WebSocket progress broadcasting ===
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ProgressEvent {
-    pub job_id: String,
-    pub phase: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
-}
-
-static JOB_BUS: OnceLock<DashMap<String, broadcast::Sender<String>>> = OnceLock::new();
-static JOB_BUFFER: OnceLock<DashMap<String, VecDeque<String>>> = OnceLock::new();
-
-fn bus() -> &'static DashMap<String, broadcast::Sender<String>> {
-    JOB_BUS.get_or_init(|| DashMap::new())
-}
-
-fn buffer_map() -> &'static DashMap<String, VecDeque<String>> {
-    JOB_BUFFER.get_or_init(|| DashMap::new())
-}
-
-fn get_sender(job_id: &str) -> broadcast::Sender<String> {
-    if let Some(s) = bus().get(job_id) { return s.clone(); }
-    let (tx, _rx) = broadcast::channel::<String>(128);
-    bus().insert(job_id.to_string(), tx.clone());
-    tx
-}
-
-fn push_buffered(job_id: &str, json: String) {
-    let mut entry = buffer_map().entry(job_id.to_string()).or_insert_with(|| VecDeque::with_capacity(32));
-    // Keep up to 32 recent events
-    if entry.len() >= 32 { entry.pop_front(); }
-    entry.push_back(json);
-}
-
-fn take_buffer(job_id: &str) -> Vec<String> {
-    if let Some(mut e) = buffer_map().get_mut(job_id) {
-        let mut out = Vec::new();
-        while let Some(v) = e.pop_front() { out.push(v); }
-        return out;
-    }
-    Vec::new()
-}
-
-fn emit_event(job_id_opt: Option<&str>, phase: &str, message: impl Into<String>, progress: Option<f32>, details: Option<serde_json::Value>) {
-    if let Some(job_id) = job_id_opt {
-        let msg_str: String = message.into();
-        // Debug: log every event emitted
-        let pstr = match progress { Some(p) => format!("{:.1}%", p), None => "null".to_string() };
-        println!("[WS][emit] job_id={} phase={} progress={} msg={}", job_id, phase, pstr, msg_str);
-        let ev = ProgressEvent { job_id: job_id.to_string(), phase: phase.to_string(), message: msg_str, progress, details };
-        if let Ok(json) = serde_json::to_string(&ev) {
-            // Broadcast to current subscribers
-            let _ = get_sender(job_id).send(json.clone());
-            // Also buffer for late subscribers
-            push_buffered(job_id, json);
-        }
-    }
-}
-
-struct WsSession { rx: broadcast::Receiver<String>, job_id: String }
-
-impl Actor for WsSession { type Context = ws::WebsocketContext<Self>; }
-
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
-    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        match msg {
-            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Text(_)) => { /* ignore client messages */ },
-            Ok(ws::Message::Close(_)) => { 
-                println!("[WS] client requested close for job {}", self.job_id);
-                ctx.stop(); 
-            },
-            _ => {}
-        }
-    }
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        println!("[WS] session started for job {}", self.job_id);
-        // First, flush any buffered events for late subscribers
-        for ev in take_buffer(&self.job_id) {
-            ctx.text(ev);
-        }
-        // Then forward new broadcast messages to the websocket
-        let mut rx = self.rx.resubscribe();
-        ctx.run_interval(std::time::Duration::from_millis(500), move |act, ctx| {
-            loop {
-                match rx.try_recv() {
-                    Ok(text) => ctx.text(text),
-                    Err(broadcast::error::TryRecvError::Empty) => break,
-                    Err(broadcast::error::TryRecvError::Closed) => { ctx.stop(); break; }
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                }
-            }
-        });
-    }
-}
-
-#[get("/ws")]
-pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Query<HashMap<String, String>>) -> Result<HttpResponse, actix_web::Error> {
-    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned()).unwrap_or_else(|| "default".to_string());
-    println!("[WS] connect: job_id={}, peer={}", job_id, req.peer_addr().map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()));
-    let rx = get_sender(&job_id).subscribe();
-    let resp = ws::start(WsSession { rx, job_id }, &req, stream);
-    resp
-}
-
-
-// ===== Configuration: Paths for Projects and Engines =====
-#[derive(Serialize, Deserialize)]
-struct PathsStatus {
-    configured: PathsConfig,
-    effective_projects_dir: String,
-    effective_engines_dir: String,
-    effective_cache_dir: String,
-    effective_downloads_dir: String,
-}
-
 #[get("/config/paths")]
 pub async fn get_paths_config() -> HttpResponse {
-    let cfg = load_paths_config();
-    let status = PathsStatus {
+    let cfg = utils::load_paths_config();
+    let status = models::PathsStatus {
         configured: cfg.clone(),
-        effective_projects_dir: default_unreal_projects_dir().to_string_lossy().to_string(),
-        effective_engines_dir: default_unreal_engines_dir().to_string_lossy().to_string(),
-        effective_cache_dir: default_cache_dir().to_string_lossy().to_string(),
-        effective_downloads_dir: default_downloads_dir().to_string_lossy().to_string(),
+        effective_projects_dir: utils::default_unreal_projects_dir().to_string_lossy().to_string(),
+        effective_engines_dir: utils::default_unreal_engines_dir().to_string_lossy().to_string(),
+        effective_cache_dir: utils::default_cache_dir().to_string_lossy().to_string(),
+        effective_downloads_dir: utils::default_downloads_dir().to_string_lossy().to_string(),
     };
     HttpResponse::Ok().json(status)
 }
 
-#[derive(Deserialize)]
-struct PathsUpdate {
-    projects_dir: Option<String>,
-    engines_dir: Option<String>,
-    cache_dir: Option<String>,
-    downloads_dir: Option<String>,
-}
+
 
 #[post("/config/paths")]
-pub async fn set_paths_config(body: web::Json<PathsUpdate>) -> HttpResponse {
-    let mut cfg = load_paths_config();
+pub async fn set_paths_config(body: web::Json<models::PathsUpdate>) -> HttpResponse {
+    let mut cfg = utils::load_paths_config();
     // Merge updates
     if let Some(p) = &body.projects_dir {
         cfg.projects_dir = Some(p.trim().to_string());
@@ -2172,15 +1308,15 @@ pub async fn set_paths_config(body: web::Json<PathsUpdate>) -> HttpResponse {
     if let Some(d) = &body.downloads_dir {
         cfg.downloads_dir = Some(d.trim().to_string());
     }
-    if let Err(e) = save_paths_config(&cfg) {
+    if let Err(e) = utils::save_paths_config(&cfg) {
         return HttpResponse::InternalServerError().body(format!("Failed to save config: {}", e));
     }
-    let status = PathsStatus {
+    let status = models::PathsStatus {
         configured: cfg.clone(),
-        effective_projects_dir: default_unreal_projects_dir().to_string_lossy().to_string(),
-        effective_engines_dir: default_unreal_engines_dir().to_string_lossy().to_string(),
-        effective_cache_dir: default_cache_dir().to_string_lossy().to_string(),
-        effective_downloads_dir: default_downloads_dir().to_string_lossy().to_string(),
+        effective_projects_dir: utils::default_unreal_projects_dir().to_string_lossy().to_string(),
+        effective_engines_dir: utils::default_unreal_engines_dir().to_string_lossy().to_string(),
+        effective_cache_dir: utils::default_cache_dir().to_string_lossy().to_string(),
+        effective_downloads_dir: utils::default_downloads_dir().to_string_lossy().to_string(),
     };
     HttpResponse::Ok().json(status)
 }

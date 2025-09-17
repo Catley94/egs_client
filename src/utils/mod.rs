@@ -19,6 +19,7 @@
 //! - egs-api crate docs: https://docs.rs/egs-api
 //! - Fab asset types: https://docs.rs/egs-api/latest/egs_api/api/types/
 
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use egs_api::api::types::account::{AccountData, AccountInfo, UserData};
 use egs_api::api::types::fab_library::FabLibrary;
@@ -26,11 +27,19 @@ use egs_api::EpicGames;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
+use actix_web::{get, web, HttpRequest, HttpResponse};
+use actix_web_actors::ws;
+use dashmap::DashMap;
 use egs_api::api::types::download_manifest::DownloadManifest;
+use tokio::sync::broadcast;
+use crate::api::{DEFAULT_CACHE_DIR_NAME, DEFAULT_DOWNLOADS_DIR_NAME};
+use crate::{models, utils};
 
 const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
 
@@ -366,9 +375,707 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
 }
 
 /// Sanitize a title for use as a folder name (mirrors logic in download_asset and refresh).
-fn sanitize_title_for_folder(s: &str) -> String {
+pub fn sanitize_title_for_folder(s: &str) -> String {
     let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
     let replaced = s.replace(&illegal[..], "_");
     let trimmed = replaced.trim().trim_matches('.').to_string();
     trimmed
+}
+
+
+/// Annotate the provided FAB library JSON (as serde_json::Value) with `downloaded` flags
+/// based on the presence of corresponding folders under downloads/.
+/// Returns (total_assets, marked_downloaded, changed).
+pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bool) {
+    let downloads_root = default_downloads_dir();
+    let mut total_assets = 0usize;
+    let mut marked_downloaded = 0usize;
+    let mut changed = false;
+
+    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
+        for asset in results.iter_mut() {
+            total_assets += 1;
+            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+            let mut asset_downloaded = false;
+            let mut used_title_folder = false;
+
+            if !title.is_empty() {
+                let folder = utils::sanitize_title_for_folder(&title);
+                let path = downloads_root.join(folder);
+                if path.exists() { asset_downloaded = true; used_title_folder = true; }
+            }
+
+            if !asset_downloaded {
+                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                    for ver in versions.iter_mut() {
+                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
+                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
+                            let path = downloads_root.join(folder);
+                            if path.exists() {
+                                asset_downloaded = true;
+                                if let Some(obj) = ver.as_object_mut() {
+                                    if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                        obj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                        changed = true;
+                                    }
+                                }
+                                break;
+                            } else {
+                                if let Some(obj) = ver.as_object_mut() {
+                                    if obj.get("downloaded").is_none() {
+                                        obj.insert("downloaded".into(), serde_json::Value::Bool(false));
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                    for ver in versions.iter_mut() {
+                        if let Some(obj) = ver.as_object_mut() {
+                            if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                obj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if asset_downloaded { marked_downloaded += 1; }
+            if let Some(obj) = asset.as_object_mut() {
+                if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(asset_downloaded) {
+                    obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded));
+                    changed = true;
+                }
+            }
+
+            // If title folder was used, ensure asset-level true and versions true already handled
+            if used_title_folder {
+                // nothing extra
+            }
+        }
+    }
+
+    (total_assets, marked_downloaded, changed)
+}
+
+
+pub fn default_cache_dir() -> PathBuf {
+    if let Some(dir) = load_paths_config().cache_dir {
+        if !dir.trim().is_empty() { return PathBuf::from(dir); }
+    }
+    if let Ok(val) = std::env::var("EGS_CACHE_DIR") {
+        if !val.trim().is_empty() { return PathBuf::from(val); }
+    }
+    PathBuf::from(DEFAULT_CACHE_DIR_NAME)
+}
+
+pub fn default_downloads_dir() -> PathBuf {
+    if let Some(dir) = load_paths_config().downloads_dir {
+        if !dir.trim().is_empty() { return PathBuf::from(dir); }
+    }
+    if let Ok(val) = std::env::var("EGS_DOWNLOADS_DIR") {
+        if !val.trim().is_empty() { return PathBuf::from(val); }
+    }
+    PathBuf::from(DEFAULT_DOWNLOADS_DIR_NAME)
+}
+
+pub fn fab_cache_file() -> PathBuf {
+    let dir = default_cache_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("fab_list.json")
+}
+
+pub fn read_build_version(engine_dir: &Path) -> Option<String> {
+    // Try Engine/Build/Build.version JSON to get Major/Minor/Patch
+    let build_file = engine_dir.join("Engine").join("Build").join("Build.version");
+    if let Ok(bytes) = fs::read(&build_file) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            let major = v.get("MajorVersion").and_then(|x| x.as_u64()).unwrap_or(0);
+            let minor = v.get("MinorVersion").and_then(|x| x.as_u64()).unwrap_or(0);
+            let patch = v.get("PatchVersion").and_then(|x| x.as_u64()).unwrap_or(0);
+            if major > 0 {
+                if patch > 0 {
+                    return Some(format!("{}.{}.{}", major, minor, patch));
+                } else {
+                    return Some(format!("{}.{}", major, minor));
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn find_editor_binary(engine_dir: &Path) -> Option<PathBuf> {
+    // Linux typical paths
+    let candidates = [
+        engine_dir.join("Engine/Binaries/Linux/UnrealEditor"),
+        engine_dir.join("Engine/Binaries/Linux/UE4Editor"),
+        engine_dir.join("Engine/Binaries/Linux/UnrealEditor.app/Contents/MacOS/UnrealEditor"), // in case of mac-like layout copied
+    ];
+    for c in candidates.iter() {
+        if c.exists() && c.is_file() {
+            return Some(c.clone());
+        }
+    }
+    None
+}
+
+pub fn parse_version_from_name(name: &str) -> Option<String> {
+    // Extract first digit-sequence like 5, 5.2, 5.2.1
+    let mut version = String::new();
+    let mut seen_digit = false;
+    for ch in name.chars() {
+        if ch.is_ascii_digit() {
+            version.push(ch);
+            seen_digit = true;
+        } else if ch == '.' && seen_digit {
+            version.push(ch);
+        } else if seen_digit {
+            break;
+        }
+    }
+    if !version.is_empty() { Some(version) } else { None }
+}
+
+
+pub fn resolve_project_path(project_param: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(project_param);
+    if p.is_file() {
+        return Some(p);
+    }
+    // If directory, look for a single .uproject inside
+    if p.is_dir() {
+        if let Ok(entries) = fs::read_dir(&p) {
+            for e in entries.flatten() {
+                let fp = e.path();
+                if fp.is_file() {
+                    if let Some(ext) = fp.extension() { if ext == "uproject" { return Some(fp); } }
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn pick_engine_for_version<'a>(engines: &'a [models::UnrealEngineInfo], requested: &str) -> Option<&'a models::UnrealEngineInfo> {
+    // Try exact version match first
+    if let Some(e) = engines.iter().find(|e| e.version == requested) { return Some(e); }
+    // Try prefix match (e.g., request 5.3 and engine 5.3.2)
+    if let Some(e) = engines.iter().find(|e| e.version.starts_with(requested)) { return Some(e); }
+    // Try name contains requested (e.g., UE_5.3)
+    engines.iter().find(|e| e.name.contains(requested))
+}
+
+pub fn resolve_project_dir_from_param(param: &str) -> Option<PathBuf> {
+    // Reuse the existing resolver; it returns a .uproject path when found
+    if let Some(p) = utils::resolve_project_path(param) {
+        return p.parent().map(|p| p.to_path_buf());
+    }
+    // If the param is a directory, check for a .uproject inside and return the dir
+    let p = PathBuf::from(param);
+    if p.is_dir() {
+        // Require that it looks like a UE project (contains a .uproject)
+        if let Ok(entries) = fs::read_dir(&p) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().map_or(false, |ext| ext == "uproject") {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    // As a last resort, try treating it as a project name under default projects dir
+    let candidate = default_unreal_projects_dir().join(param);
+    if candidate.is_dir() {
+        if let Ok(entries) = fs::read_dir(&candidate) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().map_or(false, |ext| ext == "uproject") {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<(usize, usize)> {
+    // Returns (copied, skipped)
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    if !src.exists() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
+    }
+    for entry in walkdir::WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).unwrap();
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if entry.file_type().is_file() {
+            if target.exists() && !overwrite {
+                skipped += 1;
+                continue;
+            }
+            if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
+            fs::copy(path, &target)?;
+            copied += 1;
+        }
+    }
+    Ok((copied, skipped))
+}
+
+pub fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool, job_id_opt: Option<&str>, phase: &str) -> std::io::Result<(usize, usize)> {
+    // Returns (copied, skipped) while emitting percent progress (0..=100)
+    use walkdir::WalkDir;
+    if !src.exists() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
+    }
+    // Count total files
+    let mut total_files: usize = 0;
+    for entry in WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        if entry.file_type().is_file() { total_files += 1; }
+    }
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    let mut last_percent: u32 = 0;
+    emit_event(job_id_opt, phase, "Starting...", Some(0.0), None);
+    for entry in WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).unwrap();
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if entry.file_type().is_file() {
+            if target.exists() && !overwrite {
+                skipped += 1;
+            } else {
+                if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
+                fs::copy(path, &target)?;
+                copied += 1;
+            }
+            if total_files > 0 {
+                let mut percent = ((copied as f64 / total_files as f64) * 100.0).floor() as u32;
+                if percent > 100 { percent = 100; }
+                if percent != last_percent {
+                    last_percent = percent;
+                    emit_event(job_id_opt, phase, format!("{} / {}", copied, total_files), Some(percent as f32), None);
+                }
+            }
+        }
+    }
+    emit_event(job_id_opt, phase, "Done", Some(100.0), None);
+    Ok((copied, skipped))
+}
+
+/// Ensure an asset with the given library title is available under downloads/.
+/// If not present, attempts to authenticate, locate the asset in the Fab library,
+/// pick one of its project_versions (latest if possible), and download it.
+/// Returns the asset folder path under downloads/ on success.
+pub async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&str>, phase_for_progress: &str) -> Result<PathBuf, String> {
+    // Resolve downloads base similar to other endpoints
+    let mut downloads_base = PathBuf::from("downloads");
+    if !downloads_base.exists() {
+        if let Ok(exe) = std::env::current_exe() { if let Some(exe_dir) = exe.parent() { let alt = exe_dir.join("downloads"); if alt.exists() { downloads_base = alt; } } }
+    }
+    // Check existing (exact/case-insensitive)
+    let mut asset_dir = downloads_base.join(title);
+    if !asset_dir.exists() {
+        if downloads_base.is_dir() {
+            if let Ok(entries) = fs::read_dir(&downloads_base) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                            if fname.eq_ignore_ascii_case(title) { asset_dir = p; break; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if asset_dir.exists() { return Ok(asset_dir); }
+
+    // Authenticate
+    let mut epic = utils::create_epic_games_services();
+    if !utils::try_cached_login(&mut epic).await {
+        let auth_code = utils::get_auth_code();
+        let _ = epic.auth_code(None, Some(auth_code)).await;
+        let _ = epic.login().await;
+        let _ = utils::save_user_details(&epic.user_details());
+    }
+
+    // Load library and find asset by title (case-insensitive exact match)
+    let account = utils::get_account_details(&mut epic).await.ok_or_else(|| "Unable to get account details".to_string())?;
+    let library = utils::get_fab_library_items(&mut epic, account).await.ok_or_else(|| "Unable to fetch Fab library items".to_string())?;
+    let asset = library.results.iter().find(|a| a.title.eq_ignore_ascii_case(title))
+        .ok_or_else(|| format!("Asset '{}' not found in your Fab library", title))?;
+
+    // Pick a project_version entry (prefer the one marked default if such field exists; else last)
+    let version_opt = asset.project_versions.last();
+    let version = match version_opt { Some(v) => v, None => return Err("Selected asset has no project versions to download".to_string()) };
+    let artifact_id = version.artifact_id.clone();
+    let namespace = asset.asset_namespace.clone();
+    let asset_id = asset.asset_id.clone();
+
+    // Fetch manifest(s) and try distribution points
+    let manifest_res = epic.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
+    let manifests = match manifest_res { Ok(m) => m, Err(e) => return Err(format!("Failed to fetch manifest: {:?}", e)) };
+
+    for man in manifests.iter() {
+        for url in man.distribution_point_base_urls.iter() {
+            if let Ok(mut dm) = epic.fab_download_manifest(man.clone(), url).await {
+                // Ensure SourceURL custom field present
+                use std::collections::HashMap;
+                if let Some(ref mut fields) = dm.custom_fields { fields.insert("SourceURL".to_string(), url.clone()); }
+                else { let mut map = HashMap::new(); map.insert("SourceURL".to_string(), url.clone()); dm.custom_fields = Some(map); }
+
+                // Sanitize title for folder name
+                let mut t = asset.title.clone();
+                let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+                t = t.replace(&illegal[..], "_");
+                let t = t.trim().trim_matches('.').to_string();
+                let folder_name = if !t.is_empty() { t } else { format!("{}-{}-{}", namespace, asset_id, artifact_id) };
+                let out_root = downloads_base.join(folder_name);
+                let progress_cb: Option<utils::ProgressFn> = job_id_opt.map(|jid| {
+                    let jid = jid.to_string();
+                    let phase = phase_for_progress.to_string();
+                    let f: utils::ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
+                        emit_event(Some(&jid), &phase, msg.clone(), Some(pct as f32), None);
+                    });
+                    f
+                });
+                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb).await {
+                    Ok(_) => { return Ok(out_root); },
+                    Err(e) => { eprintln!("Download failed from {}: {:?}", url, e); continue; }
+                }
+            }
+        }
+    }
+    Err("Unable to download asset from any distribution point".to_string())
+}
+
+
+
+
+
+// EVENTS - WEBSOCKETS
+
+static JOB_BUS: OnceLock<DashMap<String, broadcast::Sender<String>>> = OnceLock::new();
+static JOB_BUFFER: OnceLock<DashMap<String, VecDeque<String>>> = OnceLock::new();
+
+pub fn bus() -> &'static DashMap<String, broadcast::Sender<String>> {
+    JOB_BUS.get_or_init(|| DashMap::new())
+}
+
+pub fn buffer_map() -> &'static DashMap<String, VecDeque<String>> {
+    JOB_BUFFER.get_or_init(|| DashMap::new())
+}
+
+pub fn get_sender(job_id: &str) -> broadcast::Sender<String> {
+    if let Some(s) = bus().get(job_id) { return s.clone(); }
+    let (tx, _rx) = broadcast::channel::<String>(128);
+    bus().insert(job_id.to_string(), tx.clone());
+    tx
+}
+
+pub fn push_buffered(job_id: &str, json: String) {
+    let mut entry = buffer_map().entry(job_id.to_string()).or_insert_with(|| VecDeque::with_capacity(32));
+    // Keep up to 32 recent events
+    if entry.len() >= 32 { entry.pop_front(); }
+    entry.push_back(json);
+}
+
+pub fn take_buffer(job_id: &str) -> Vec<String> {
+    if let Some(mut e) = buffer_map().get_mut(job_id) {
+        let mut out = Vec::new();
+        while let Some(v) = e.pop_front() { out.push(v); }
+        return out;
+    }
+    Vec::new()
+}
+
+pub fn emit_event(job_id_opt: Option<&str>, phase: &str, message: impl Into<String>, progress: Option<f32>, details: Option<serde_json::Value>) {
+    if let Some(job_id) = job_id_opt {
+        let msg_str: String = message.into();
+        // Debug: log every event emitted
+        let pstr = match progress { Some(p) => format!("{:.1}%", p), None => "null".to_string() };
+        println!("[WS][emit] job_id={} phase={} progress={} msg={}", job_id, phase, pstr, msg_str);
+        let ev = models::ProgressEvent { job_id: job_id.to_string(), phase: phase.to_string(), message: msg_str, progress, details };
+        if let Ok(json) = serde_json::to_string(&ev) {
+            // Broadcast to current subscribers
+            let _ = get_sender(job_id).send(json.clone());
+            // Also buffer for late subscribers
+            push_buffered(job_id, json);
+        }
+    }
+}
+
+pub struct WsSession {
+    pub rx: broadcast::Receiver<String>,
+    pub job_id: String
+}
+
+impl Actor for WsSession { type Context = ws::WebsocketContext<Self>; }
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match msg {
+            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
+            Ok(ws::Message::Text(_)) => { /* ignore client messages */ },
+            Ok(ws::Message::Close(_)) => {
+                println!("[WS] client requested close for job {}", self.job_id);
+                ctx.stop();
+            },
+            _ => {}
+        }
+    }
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        println!("[WS] session started for job {}", self.job_id);
+        // First, flush any buffered events for late subscribers
+        for ev in take_buffer(&self.job_id) {
+            ctx.text(ev);
+        }
+        // Then forward new broadcast messages to the websocket
+        let mut rx = self.rx.resubscribe();
+        ctx.run_interval(std::time::Duration::from_millis(500), move |act, ctx| {
+            loop {
+                match rx.try_recv() {
+                    Ok(text) => ctx.text(text),
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Closed) => { ctx.stop(); break; }
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                }
+            }
+        });
+    }
+}
+
+pub fn config_file_path() -> PathBuf {
+    // Store under local cache directory name (not affected by runtime config)
+    let mut p = PathBuf::from(DEFAULT_CACHE_DIR_NAME);
+    let _ = std::fs::create_dir_all(&p);
+    p.push("config.json");
+    p
+}
+
+pub fn load_paths_config() -> models::PathsConfig {
+    let path = utils::config_file_path();
+    if let Ok(mut f) = std::fs::File::open(&path) {
+        let mut s = String::new();
+        if f.read_to_string(&mut s).is_ok() {
+            if let Ok(cfg) = serde_json::from_str::<models::PathsConfig>(&s) {
+                return cfg;
+            }
+        }
+    }
+    models::PathsConfig::default()
+}
+
+pub fn save_paths_config(cfg: &models::PathsConfig) -> std::io::Result<()> {
+    let path = utils::config_file_path();
+    let s = serde_json::to_string_pretty(cfg).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(path, s)
+}
+
+pub fn default_unreal_projects_dir() -> PathBuf {
+    // 1) Config override
+    if let Some(dir) = load_paths_config().projects_dir {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    // 2) Env var override
+    if let Ok(val) = std::env::var("EGS_UNREAL_PROJECTS_DIR") {
+        if !val.trim().is_empty() {
+            return PathBuf::from(val);
+        }
+    }
+    // 3) Default: $HOME/Documents/Unreal Projects
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push("Documents");
+        p.push("Unreal Projects");
+        p
+    } else {
+        // Fallback to current dir if HOME not set
+        PathBuf::from(".")
+    }
+}
+
+pub fn default_unreal_engines_dir() -> PathBuf {
+    // 1) Config override
+    if let Some(dir) = utils::load_paths_config().engines_dir {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    // 2) Env var override
+    if let Ok(val) = std::env::var("EGS_UNREAL_ENGINES_DIR") {
+        if !val.trim().is_empty() {
+            return PathBuf::from(val);
+        }
+    }
+    // 3) Default: $HOME/UnrealEngines
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push("UnrealEngines");
+        p
+    } else {
+        PathBuf::from(".")
+    }
+}
+
+/// Internal helper that refreshes the Fab library without initiating any downloads.
+///
+/// Returns a summary list (JSON) suitable for UI consumption. On auth failure or missing
+/// details, returns a 200 OK with a short message body describing the condition.
+pub async fn handle_refresh_fab_list() -> HttpResponse {
+    // Try to use cached refresh token first (no browser, no copy-paste)
+    let mut epic_games_services = utils::create_epic_games_services();
+    if !utils::try_cached_login(&mut epic_games_services).await {
+        // If cached token is not available or invalid, we obtain an auth code from utils,
+        // perform the code exchange, and then finalize login. On success, tokens are saved
+        // for subsequent runs to avoid repeating the interactive step.
+        let auth_code = utils::get_auth_code();
+
+        // Authenticate with Epic's Servers using the code
+        if epic_games_services.auth_code(None, Some(auth_code)).await {
+            println!("Logged in with provided auth code");
+        }
+        // Complete login; the SDK should populate user_details with tokens
+        let _ = epic_games_services.login().await;
+
+        // Persist tokens for next runs
+        let ud = epic_games_services.user_details();
+        if let Err(e) = utils::save_user_details(&ud) {
+            eprintln!("Warning: failed to save tokens: {}", e);
+        }
+    } else {
+        println!("Logged in using cached credentials");
+    }
+
+    // Fetch account details and additional account info (for diagnostics/UI display).
+    let details = utils::get_account_details(&mut epic_games_services).await;
+    let info = utils::get_account_info(&mut epic_games_services).await;
+
+    // Retrieve the Fab library based on the acquired account details.
+    match details {
+        None => {
+            println!("No details found");
+            HttpResponse::Ok().body("No details found")
+        }
+        Some(info) => {
+            let assets = utils::get_fab_library_items(&mut epic_games_services, info).await;
+            match assets {
+                None => {
+                    println!("No assets found");
+                    HttpResponse::Ok().body("No assets found")
+                }
+                Some(retrieved_assets) => {
+                    println!("Library items length: {:?}", retrieved_assets.results.len());
+
+                    // Convert to JSON value so we can enrich with local-only fields like 'downloaded'.
+                    let mut value = match serde_json::to_value(&retrieved_assets) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Warning: failed to convert FAB list to JSON value: {}", e);
+                            return HttpResponse::Ok().json(&retrieved_assets);
+                        }
+                    };
+
+                    // Compute 'downloaded' flags by checking the downloads/ directory for expected folders.
+                    let downloads_root = utils::default_downloads_dir();
+                    let mut total_assets = 0usize;
+                    let mut marked_downloaded = 0usize;
+
+                    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
+                        for asset in results.iter_mut() {
+                            total_assets += 1;
+                            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                            let mut asset_downloaded = false;
+
+                            // Title-based folder (preferred by downloader)
+                            if !title.is_empty() {
+                                let folder = utils::sanitize_title_for_folder(&title);
+                                let path = downloads_root.join(folder);
+                                if path.exists() { asset_downloaded = true; }
+                            }
+
+                            // Fallback: version-specific folders using namespace-assetId-artifactId
+                            if !asset_downloaded {
+                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                                    for ver in versions.iter_mut() {
+                                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
+                                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
+                                            let path = downloads_root.join(folder);
+                                            if path.exists() {
+                                                asset_downloaded = true;
+                                                // Also annotate the version itself for finer UI, if desired.
+                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
+                                                break;
+                                            } else {
+                                                // Mark as false for explicitness (optional)
+                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(false)); });
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Title folder exists: mark all versions as downloaded=true as a heuristic
+                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                                    for ver in versions.iter_mut() {
+                                        ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
+                                    }
+                                }
+                            }
+
+                            if asset_downloaded { marked_downloaded += 1; }
+                            // Set the asset-level flag
+                            asset.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded)); });
+                        }
+                    }
+
+                    println!("Annotated {} of {} assets as downloaded based on 'downloads/' folder.", marked_downloaded, total_assets);
+
+                    // Save enriched JSON to cache for faster subsequent loads and offline-friendly UI.
+                    if let Ok(json_bytes) = serde_json::to_vec_pretty(&value) {
+                        let cache_path = utils::fab_cache_file();
+                        if let Some(parent) = cache_path.parent() { let _ = fs::create_dir_all(parent); }
+                        if let Err(e) = fs::write(&cache_path, &json_bytes) {
+                            eprintln!("Warning: failed to write FAB cache: {}", e);
+                        }
+                    } else {
+                        eprintln!("Warning: failed to serialize enriched FAB library for cache");
+                    }
+
+                    // Return enriched library items so the UI can show download indicators.
+                    return HttpResponse::Ok().json(value);
+
+                    // Reached only if json() above wasn't returned; keep OK fallback
+                    HttpResponse::Ok().finish()
+                }
+            }
+        }
+    }
 }
