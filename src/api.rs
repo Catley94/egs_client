@@ -52,6 +52,7 @@
 use actix_web::{get, post, HttpResponse, web, Responder, HttpRequest};
 use colored::Colorize;
 use crate::utils;
+use crate::models;
 
 use std::fs;
 use std::io::Read;
@@ -73,13 +74,7 @@ pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
 
 /// Note: cache and downloads directories are configurable; see helpers below for effective paths.
 
-/// Sanitize a title for use as a folder name (mirrors logic in download_asset and refresh).
-fn sanitize_title_for_folder(s: &str) -> String {
-    let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-    let replaced = s.replace(&illegal[..], "_");
-    let trimmed = replaced.trim().trim_matches('.').to_string();
-    trimmed
-}
+
 
 /// Annotate the provided FAB library JSON (as serde_json::Value) with `downloaded` flags
 /// based on the presence of corresponding folders under downloads/.

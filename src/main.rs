@@ -25,6 +25,7 @@
 
 mod api;
 mod utils;
+mod models;
 
 use actix_web::{App, HttpServer};
 use std::env;
