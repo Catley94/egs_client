@@ -61,7 +61,6 @@ async fn main() -> std::io::Result<()> {
             App::new()
                 // Public HTTP endpoints
                 .service(api::get_fab_list)
-                .service(api::get_fab_list_post)
                 .service(api::refresh_fab_list)
                 .service(api::download_asset)
                 .service(api::list_unreal_projects)
