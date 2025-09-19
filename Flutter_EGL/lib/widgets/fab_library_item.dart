@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:test_app_ui/services/image_cache.dart';
 
 class FabLibraryItem extends StatelessWidget {
   final String title;
@@ -56,6 +57,7 @@ class FabLibraryItem extends StatelessWidget {
                   child: (thumbnailUrl != null && thumbnailUrl!.isNotEmpty)
                       ? CachedNetworkImage(
                           imageUrl: thumbnailUrl!,
+                          cacheManager: AppImageCache.manager,
                           fit: BoxFit.cover,
                           placeholder: (context, url) => const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
                           errorWidget: (context, url, error) => const Icon(Icons.broken_image, size: 40, color: Color(0xFF9AA4AF)),

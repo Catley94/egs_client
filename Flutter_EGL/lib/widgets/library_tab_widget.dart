@@ -1021,6 +1021,7 @@ class _FabAssetsGridState extends State<_FabAssetsGrid> {
                                       final url = images[i].url;
                                       return CachedNetworkImage(
                                         imageUrl: url,
+                                        cacheManager: AppImageCache.manager,
                                         fit: BoxFit.cover,
                                         errorWidget: (c, url, e) => const Center(child: Icon(Icons.broken_image, size: 48, color: Color(0xFF9AA4AF))),
                                         placeholder: (c, url) => const Center(child: SizedBox(width: 32, height: 32, child: CircularProgressIndicator(strokeWidth: 2))),

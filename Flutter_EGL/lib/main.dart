@@ -2,12 +2,15 @@
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:flutter/material.dart';
+import 'services/image_cache.dart';
 import 'package:window_size/window_size.dart' as window_size;
 import 'package:window_manager/window_manager.dart';
 import 'package:test_app_ui/widgets/unreal_engine.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Initialize the image cache so CachedNetworkImage uses a deterministic directory
+  await AppImageCache.init();
 
   if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
     const fixedSize = Size(1400, 800); // pick your fixed size
