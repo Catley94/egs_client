@@ -43,7 +43,8 @@ enum RunMode {
 }
 
 fn parse_mode() -> RunMode {
-    // Priority: CLI arg --mode=..., then positional arg, then env EGS_MODE, else Backend
+    // Priority: CLI arg --mode=..., then positional arg, then env EGS_MODE,
+    // else auto-detect: if a Flutter binary is present, default to Both; otherwise Backend
     let mut mode_str: Option<String> = None;
     let args: Vec<String> = env::args().collect();
     for a in &args {
@@ -66,10 +67,18 @@ fn parse_mode() -> RunMode {
             mode_str = Some(env_mode);
         }
     }
-    match mode_str.as_deref() {
-        Some("frontend") => RunMode::Frontend,
-        Some("both") => RunMode::Both,
-        Some("backend") | _ => RunMode::Backend,
+    if let Some(s) = mode_str.as_deref() {
+        return match s {
+            "frontend" => RunMode::Frontend,
+            "both" => RunMode::Both,
+            _ => RunMode::Backend,
+        };
+    }
+    // No explicit mode provided — auto-detect Flutter binary for a single-binary experience
+    if resolve_flutter_binary().is_some() {
+        RunMode::Both
+    } else {
+        RunMode::Backend
     }
 }
 
