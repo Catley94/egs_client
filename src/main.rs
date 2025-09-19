@@ -27,6 +27,13 @@ mod api;
 mod utils;
 mod models;
 
+// Configure where the Flutter desktop binary resides in development vs production builds.
+// These can be overridden at runtime with the FLUTTER_APP_PATH environment variable.
+// Dev (debug build): typically points to a debug bundle output from `flutter build linux --debug`.
+pub const DEV_FLUTTER_APP_PATH: &str = "Flutter_EGL/build/linux/x64/debug/bundle/test_app_ui";
+// Prod (release build): typically points to a release bundle output from `flutter build linux --release`.
+pub const PROD_FLUTTER_APP_PATH: &str = "Flutter_EGL/build/linux/x64/release/bundle/test_app_ui";
+
 use actix_web::{App, HttpServer};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -83,15 +90,44 @@ fn parse_mode() -> RunMode {
 }
 
 fn resolve_flutter_binary() -> Option<PathBuf> {
-    // If user explicitly provided a path, use it.
+    // Highest priority: explicit env override.
     if let Ok(p) = env::var("FLUTTER_APP_PATH") {
         let pb = PathBuf::from(p);
         if pb.exists() {
+            println!("Flutter binary: using FLUTTER_APP_PATH override: {}", pb.display());
             return Some(pb);
+        } else {
+            eprintln!("FLUTTER_APP_PATH is set but path does not exist: {}", pb.display());
         }
     }
 
-    // Project-relative defaults based on platform and common Flutter build outputs.
+    // Next: build-mode specific constant paths defined at the top of this file.
+    // If compiled in debug (dev) mode, prefer the dev path; otherwise prefer the prod path.
+    let debug_build = cfg!(debug_assertions);
+    println!(
+        "Rust build mode detected: {} (path preference: {} first)",
+        if debug_build { "debug" } else { "release" },
+        if debug_build { "DEV_FLUTTER_APP_PATH" } else { "PROD_FLUTTER_APP_PATH" }
+    );
+    let mode_pref: [&str; 2] = if debug_build {
+        [DEV_FLUTTER_APP_PATH, PROD_FLUTTER_APP_PATH]
+    } else {
+        [PROD_FLUTTER_APP_PATH, DEV_FLUTTER_APP_PATH]
+    };
+    for c in mode_pref {
+        let p = Path::new(c);
+        if p.exists() {
+            println!(
+                "Flutter binary: selected {} (exists)",
+                p.display()
+            );
+            return Some(p.to_path_buf());
+        } else {
+            println!("Flutter binary candidate not found: {}", p.display());
+        }
+    }
+
+    // Fallbacks: project-relative defaults based on platform and common Flutter build outputs.
     // App name from pubspec.yaml: test_app_ui
     #[cfg(target_os = "linux")]
     {
@@ -101,8 +137,17 @@ fn resolve_flutter_binary() -> Option<PathBuf> {
             // Older layout (if any)
             "Flutter_EGL/build/linux/x64/release/bundle/test_app_ui/test_app_ui",
         ];
-        for c in candidates { let p = Path::new(c); if p.exists() { return Some(p.to_path_buf()); } }
+        for c in candidates {
+            let p = Path::new(c);
+            if p.exists() {
+                println!("Flutter binary: selected fallback candidate: {}", p.display());
+                return Some(p.to_path_buf());
+            } else {
+                println!("Flutter binary fallback candidate not found: {}", p.display());
+            }
+        }
     }
+    println!("Flutter binary not found via env, configured paths, or fallbacks.");
     None
 }
 
@@ -152,6 +197,9 @@ fn spawn_flutter(ui_path: &Path, bind_addr: &str) -> std::io::Result<Child> {
 async fn main() -> std::io::Result<()> {
     // Initialize env_logger to honor RUST_LOG levels (e.g., RUST_LOG=info)
     env_logger::init();
+
+    // Explicitly log Rust build mode early for visibility
+    println!("Rust build mode: {}", if cfg!(debug_assertions) { "debug" } else { "release" });
 
     let mode = parse_mode();
 
