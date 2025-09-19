@@ -7,6 +7,7 @@ import '../services/api_service.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/image_cache.dart';
@@ -21,6 +22,173 @@ class LibraryTab extends StatefulWidget {
 enum AssetSortMode { newerUEFirst, olderUEFirst, alphaAZ, alphaZA }
 
 class _LibraryTabState extends State<LibraryTab> {
+  Widget _buildUnauthenticatedCard(BuildContext context, String authUrl, String? message) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.all(24.0),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: cs.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF1A2027)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.lock_open, size: 28),
+                    const SizedBox(width: 8),
+                    Text('Sign in required', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  message ??
+                  'To view your Fab Library, sign in to Epic Games in your web browser. After signing in, the page will show a JSON with an authorizationCode. Paste that code here to complete login.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                // Link and code entry inline
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        FilledButton.icon(
+                          icon: const Icon(Icons.open_in_browser),
+                          label: const Text('Open Epic login in browser'),
+                          onPressed: () async {
+                            final uri = Uri.parse(authUrl);
+                            if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Failed to open browser. Copy the URL manually.')),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 12),
+                        TextButton.icon(
+                          onPressed: () async {
+                            final uri = Uri.parse(authUrl);
+                            await Clipboard.setData(ClipboardData(text: uri.toString()));
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Login URL copied to clipboard')),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.copy),
+                          label: const Text('Copy URL'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SelectableText('Login URL: ' + authUrl, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                    const SizedBox(height: 16),
+                    Text('Paste authorizationCode here:', style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _authCodeController,
+                            decoration: const InputDecoration(
+                              labelText: 'authorizationCode',
+                              hintText: 'Paste the code here',
+                              border: OutlineInputBorder(),
+                            ),
+                            onSubmitted: (_) async {
+                              await _submitAuthCode();
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          onPressed: _authWorking ? null : () async { await _submitAuthCode(); },
+                          icon: _authWorking ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
+                          label: const Text('Submit'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _promptAuthCodeAndSubmit(String authUrl) async {
+    // Kept for compatibility; now prefer inline input UI.
+    String code = '';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final controller = TextEditingController();
+        return AlertDialog(
+          title: const Text('Enter authorization code'),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: 'authorizationCode',
+              hintText: 'Paste the code here',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+            FilledButton(onPressed: () { code = controller.text.trim(); Navigator.of(ctx).pop(true); }, child: const Text('Submit')),
+          ],
+        );
+      },
+    );
+    if (ok == true && code.isNotEmpty) {
+      final success = await _api.completeAuth(code);
+      if (!mounted) return;
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login successful. Loading your library...')));
+        setState(() {
+          _fabFuture = _api.getFabList();
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login failed. Please verify the code and try again.')));
+      }
+    }
+  }
+
+  Future<void> _submitAuthCode() async {
+    final code = _authCodeController.text.trim();
+    if (code.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please paste the authorizationCode.')));
+      return;
+    }
+    setState(() { _authWorking = true; });
+    try {
+      final ok = await _api.completeAuth(code);
+      if (!mounted) return;
+      if (ok) {
+        _authCodeController.clear();
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login successful. Loading your library...')));
+        setState(() { _fabFuture = _api.getFabList(); });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login failed. Please verify the code and try again.')));
+      }
+    } finally {
+      if (mounted) setState(() { _authWorking = false; });
+    }
+  }
+
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   String _versionFilter = '';
@@ -32,6 +200,8 @@ class _LibraryTabState extends State<LibraryTab> {
   late Future<List<UnrealEngineInfo>> _enginesFuture;
   late Future<List<UnrealProjectInfo>> _projectsFuture;
   late Future<List<FabAsset>> _fabFuture;
+  final TextEditingController _authCodeController = TextEditingController();
+  bool _authWorking = false;
 
   // cache of engines for deciding version on open
   List<UnrealEngineInfo> _engines = const [];
@@ -569,6 +739,28 @@ class _LibraryTabState extends State<LibraryTab> {
                         );
                       }
                       if (snapshot.hasError) {
+                        final err = snapshot.error;
+                        // Preferred path: explicit unauthenticated exception from ApiService
+                        print("Print Line...");
+                        if (err is UnauthenticatedException) {
+                          print("Error is UnauthenticatedException");
+                          print("auth");
+                          print(err.authUrl);
+                          final authUrl = err.authUrl.isNotEmpty ? err.authUrl : 'https://www.epicgames.com/id/login';
+                          return _buildUnauthenticatedCard(context, authUrl, err.message);
+                        }
+                        // Fallback path: detect 401/unauthorized style errors and show auth UI instead of a raw error
+                        final errStr = (err?.toString() ?? '').toLowerCase();
+                        final looksUnauthed = errStr.contains('401') || errStr.contains('unauthorized') || errStr.contains('unauth');
+                        if (looksUnauthed) {
+                          return FutureBuilder<AuthStart>(
+                            future: _api.getAuthStart(),
+                            builder: (ctx, snap) {
+                              final url = (snap.data?.authUrl ?? 'https://www.epicgames.com/id/login');
+                              return _buildUnauthenticatedCard(context, url, 'No cached credentials. Please log in via your browser and enter the authorization code.');
+                            },
+                          );
+                        }
                         return Padding(
                           padding: const EdgeInsets.all(16.0),
                           child: Text('Failed to load Fab library: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent)),

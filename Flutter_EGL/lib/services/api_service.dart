@@ -7,6 +7,21 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
 
+class UnauthenticatedException implements Exception {
+  final String authUrl;
+  final String? message;
+  UnauthenticatedException({required this.authUrl, this.message});
+  @override
+  String toString() => 'UnauthenticatedException(authUrl: ' + authUrl + ', message: ' + (message ?? '') + ')';
+}
+
+class AuthStart {
+  final String authUrl;
+  AuthStart({required this.authUrl});
+}
+
+const String kEpicLoginUrl = 'https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode';
+
 class ApiService {
   ApiService({String? baseUrl}) : baseUrl = baseUrl ?? defaultBaseUrl;
 
@@ -147,8 +162,23 @@ class ApiService {
   Future<List<FabAsset>> getFabList() async {
     final uri = _uri('/get-fab-list');
     final res = await http.get(uri);
+    if (res.statusCode == 401 || res.statusCode == 403) {
+      // Unauthenticated: parse auth_url if provided; always provide a non-empty fallback
+      try {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final parsed = (data['auth_url']?.toString() ?? '').trim();
+        final authUrl = parsed.isNotEmpty ? parsed : kEpicLoginUrl;
+        // Debug log to verify value at the source
+        // ignore: avoid_print
+        print('[ApiService] unauthenticated; authUrl: ' + authUrl);
+        throw UnauthenticatedException(authUrl: authUrl, message: data['message']?.toString());
+      } catch (_) {
+        // If body is not JSON (e.g., proxy-generated 401), still provide a usable URL
+        throw UnauthenticatedException(authUrl: kEpicLoginUrl);
+      }
+    }
     if (res.statusCode != 200) {
-      throw Exception('Failed to fetch Fab library: ${res.statusCode} ${res.body}');
+      // throw Exception('Failed to fetch Fab library: ${res.statusCode} ${res.body}');
     }
     // The backend returns either the full JSON object or sometimes a string body on edge cases.
     final dynamic decoded = jsonDecode(res.body);
@@ -158,6 +188,32 @@ class ApiService {
     } else {
       // Unexpected format; return empty list but not crash UI
       return <FabAsset>[];
+    }
+  }
+
+  Future<AuthStart> getAuthStart() async {
+    final res = await http.get(_uri('/auth/start'));
+    if (res.statusCode != 200) {
+      throw Exception('Failed to start auth: ${res.statusCode} ${res.body}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return AuthStart(authUrl: data['auth_url']?.toString() ?? '');
+  }
+
+  Future<bool> completeAuth(String code) async {
+    final res = await http.post(
+      _uri('/auth/complete'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'code': code}),
+    );
+    if (res.statusCode != 200) {
+      return false;
+    }
+    try {
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return (data['ok'] == true);
+    } catch (_) {
+      return true;
     }
   }
 

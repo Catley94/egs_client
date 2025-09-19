@@ -41,7 +41,7 @@ use tokio::sync::broadcast;
 use crate::api::{DEFAULT_CACHE_DIR_NAME, DEFAULT_DOWNLOADS_DIR_NAME};
 use crate::{models, utils};
 
-const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
+pub const EPIC_LOGIN_URL: &str = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode";
 
 /// Opens a browser to Epic login and requests the authorizationCode, then reads it from stdin.
 ///
@@ -1006,23 +1006,14 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
     // Try to use cached refresh token first (no browser, no copy-paste)
     let mut epic_games_services = utils::create_epic_games_services();
     if !utils::try_cached_login(&mut epic_games_services).await {
-        // If cached token is not available or invalid, we obtain an auth code from utils,
-        // perform the code exchange, and then finalize login. On success, tokens are saved
-        // for subsequent runs to avoid repeating the interactive step.
-        let auth_code = utils::get_auth_code();
-
-        // Authenticate with Epic's Servers using the code
-        if epic_games_services.auth_code(None, Some(auth_code)).await {
-            println!("Logged in with provided auth code");
-        }
-        // Complete login; the SDK should populate user_details with tokens
-        let _ = epic_games_services.login().await;
-
-        // Persist tokens for next runs
-        let ud = epic_games_services.user_details();
-        if let Err(e) = utils::save_user_details(&ud) {
-            eprintln!("Warning: failed to save tokens: {}", e);
-        }
+        // No cached tokens: instruct the UI to start the interactive login flow instead of blocking on stdin.
+        // Provide the URL the user must visit to obtain the authorizationCode.
+        let payload = serde_json::json!({
+            "unauthenticated": true,
+            "auth_url": EPIC_LOGIN_URL,
+            "message": "No cached credentials. Please log in via your browser and enter the authorization code in the app."
+        });
+        return HttpResponse::Unauthorized().json(payload);
     } else {
         println!("Logged in using cached credentials");
     }

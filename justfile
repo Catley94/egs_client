@@ -22,12 +22,15 @@ test:
 flutter-build-linux:
     cd Flutter_EGL && flutter clean && flutter pub get && flutter build linux --release
 
-# Run both backend and Flutter UI explicitly
+# Run both backend and Flutter UI explicitly (ensure Flutter debug bundle is fresh)
 run-both:
+    cd Flutter_EGL && flutter clean && flutter pub get && flutter build linux --debug
     cargo run -- --mode=both
 
 # Run Flutter UI only (assumes backend is already running elsewhere)
+# Ensure a fresh Flutter debug build first so the spawned binary is up to date
 run-frontend:
+    cd Flutter_EGL && flutter clean && flutter pub get && flutter build linux --debug
     cargo run -- --mode=frontend
 
 # Run backend only

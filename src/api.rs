@@ -53,6 +53,7 @@ use actix_web::{get, post, HttpResponse, web, Responder, HttpRequest};
 use colored::Colorize;
 use crate::utils;
 use crate::models;
+use crate::utils::EPIC_LOGIN_URL;
 
 use std::fs;
 use std::io::Read;
@@ -148,6 +149,52 @@ pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Que
 pub async fn refresh_fab_list() -> HttpResponse {
     // Respond with the list of Fab Assets and cache it
     utils::handle_refresh_fab_list().await
+}
+
+#[get("/auth/start")]
+pub async fn auth_start() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "auth_url": EPIC_LOGIN_URL,
+        "message": "Open this URL in your browser and sign in to Epic Games; copy the authorizationCode from the JSON page."
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct AuthCompleteRequest { pub code: String }
+
+#[post("/auth/complete")]
+pub async fn auth_complete(body: web::Json<AuthCompleteRequest>) -> HttpResponse {
+    let code = body.code.trim().trim_matches('"').to_string();
+    if code.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "ok": false,
+            "message": "Missing 'code' field in body"
+        }));
+    }
+    let mut epic = utils::create_epic_games_services();
+    let auth_ok = epic.auth_code(None, Some(code)).await;
+    if !auth_ok {
+        return HttpResponse::Unauthorized().json(serde_json::json!({
+            "ok": false,
+            "message": "Auth code was not accepted by Epic servers"
+        }));
+    }
+    // Complete login and persist tokens
+    let logged_in = epic.login().await;
+    if !logged_in {
+        return HttpResponse::Unauthorized().json(serde_json::json!({
+            "ok": false,
+            "message": "Login failed after exchanging auth code"
+        }));
+    }
+    let ud = epic.user_details();
+    if let Err(e) = utils::save_user_details(&ud) {
+        eprintln!("Warning: failed to save tokens: {}", e);
+    }
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "message": "Authentication successful"
+    }))
 }
 
 

@@ -265,6 +265,8 @@ async fn main() -> std::io::Result<()> {
                 .service(api::ws_endpoint)
                 .service(api::get_paths_config)
                 .service(api::set_paths_config)
+                .service(api::auth_start)
+                .service(api::auth_complete)
         })
         .bind(&bind_addr) {
             Ok(server) => {
