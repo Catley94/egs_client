@@ -126,3 +126,4 @@ app.*.symbols
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
 !/dev/ci/**/Gemfile.lock
 /.idea
+cache/home/.egs_client_tokens.json
