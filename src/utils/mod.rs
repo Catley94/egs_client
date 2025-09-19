@@ -826,12 +826,41 @@ pub fn emit_event(job_id_opt: Option<&str>, phase: &str, message: impl Into<Stri
     }
 }
 
+// Global shutdown hook for WS-close-triggered backend stop
+static SHUTDOWN_TX: OnceLock<broadcast::Sender<()>> = OnceLock::new();
+
+pub fn set_shutdown_sender(tx: broadcast::Sender<()>) {
+    let _ = SHUTDOWN_TX.set(tx);
+}
+
+pub fn request_shutdown() {
+    if let Some(tx) = SHUTDOWN_TX.get() {
+        let _ = tx.send(());
+    }
+}
+
+fn exit_on_ws_close_enabled() -> bool {
+    if let Ok(v) = std::env::var("EGS_EXIT_ON_WS_CLOSE") {
+        let s = v.trim().to_ascii_lowercase();
+        return s == "1" || s == "true" || s == "yes";
+    }
+    false
+}
+
 pub struct WsSession {
     pub rx: broadcast::Receiver<String>,
     pub job_id: String
 }
 
-impl Actor for WsSession { type Context = ws::WebsocketContext<Self>; }
+impl Actor for WsSession {
+    type Context = ws::WebsocketContext<Self>;
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        if exit_on_ws_close_enabled() {
+            println!("[WS] session stopped for job {} — requesting backend shutdown", self.job_id);
+            request_shutdown();
+        }
+    }
+}
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
