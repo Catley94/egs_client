@@ -1019,14 +1019,11 @@ class _FabAssetsGridState extends State<_FabAssetsGrid> {
                                     onPageChanged: (i) => setStateSB(() => index = i),
                                     itemBuilder: (context, i) {
                                       final url = images[i].url;
-                                      return Image.network(
-                                        url,
+                                      return CachedNetworkImage(
+                                        imageUrl: url,
                                         fit: BoxFit.cover,
-                                        errorBuilder: (c, e, s) => const Center(child: Icon(Icons.broken_image, size: 48, color: Color(0xFF9AA4AF))),
-                                        loadingBuilder: (c, child, progress) {
-                                          if (progress == null) return child;
-                                          return const Center(child: SizedBox(width: 32, height: 32, child: CircularProgressIndicator(strokeWidth: 2)));
-                                        },
+                                        errorWidget: (c, url, e) => const Center(child: Icon(Icons.broken_image, size: 48, color: Color(0xFF9AA4AF))),
+                                        placeholder: (c, url) => const Center(child: SizedBox(width: 32, height: 32, child: CircularProgressIndicator(strokeWidth: 2))),
                                       );
                                     },
                                   ),

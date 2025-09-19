@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class FabLibraryItem extends StatelessWidget {
   final String title;
@@ -53,14 +54,11 @@ class FabLibraryItem extends StatelessWidget {
                     border: Border.all(color: const Color(0xFF1A2027)),
                   ),
                   child: (thumbnailUrl != null && thumbnailUrl!.isNotEmpty)
-                      ? Image.network(
-                          thumbnailUrl!,
+                      ? CachedNetworkImage(
+                          imageUrl: thumbnailUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, size: 40, color: Color(0xFF9AA4AF)),
-                          loadingBuilder: (context, child, loadingProgress) {
-                            if (loadingProgress == null) return child;
-                            return const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)));
-                          },
+                          placeholder: (context, url) => const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
+                          errorWidget: (context, url, error) => const Icon(Icons.broken_image, size: 40, color: Color(0xFF9AA4AF)),
                         )
                       : const Icon(Icons.image, size: 40, color: Color(0xFF9AA4AF)),
                 ),
