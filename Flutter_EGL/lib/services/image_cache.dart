@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -45,12 +46,28 @@ class AppImageCache {
     if (overrideBaseDir != null) {
       baseDir = overrideBaseDir;
     } else {
-      // Use Application Support dir so cache persists across sessions and is user-specific.
-      // Fallback to temporary directory if support directory fails.
-      try {
-        baseDir = await getApplicationSupportDirectory();
-      } catch (_) {
-        baseDir = await getTemporaryDirectory();
+      if (!kReleaseMode) {
+        // Development: keep cache inside project for visibility
+        baseDir = Directory(p.join('.', 'cache'));
+      } else {
+        // Production: Prefer XDG cache on Linux; otherwise Application Support.
+        // Fallback to temporary directory if support directory fails.
+        try {
+          if (!kIsWeb && Platform.isLinux) {
+            final xdg = Platform.environment['XDG_CACHE_HOME'];
+            final home = Platform.environment['HOME'];
+            final basePath = (xdg != null && xdg.isNotEmpty)
+                ? xdg
+                : (home != null && home.isNotEmpty)
+                    ? p.join(home, '.cache')
+                    : '.cache';
+            baseDir = Directory(p.join(basePath, 'egs-client'));
+          } else {
+            baseDir = await getApplicationSupportDirectory();
+          }
+        } catch (_) {
+          baseDir = await getTemporaryDirectory();
+        }
       }
     }
 

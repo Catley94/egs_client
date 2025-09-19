@@ -8,6 +8,8 @@ import '../models/unreal.dart';
 import '../models/fab.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import '../services/image_cache.dart';
 
 class LibraryTab extends StatefulWidget {
   const LibraryTab({super.key});

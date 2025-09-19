@@ -104,17 +104,22 @@ pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec
 /// Future improvements (TODO):
 /// - Move to a proper cache/config directory and provide a "clear credentials" helper.
 fn token_cache_path() -> PathBuf {
-    // Store tokens in the user's home directory
-    // TODO: Change this to a location properly in cache, or local to the project
-    // TODO: Also add a way to clear the cached credentials
-    if let Ok(home) = std::env::var("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".egs_client_tokens.json");
-        p
-    } else {
-        // Fallback: current directory
-        PathBuf::from(".egs_client_tokens.json")
+    // In debug builds, prefer a project-local token file
+    if cfg!(debug_assertions) {
+        return PathBuf::from(".egs_client_tokens.json");
     }
+    // Production/default: XDG config: $XDG_CONFIG_HOME/egs-client/tokens.json (fallback ~/.config/egs-client/tokens.json)
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+    let dir = base.join("egs-client");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("Warning: failed to create config dir {}: {}", dir.display(), e);
+    }
+    dir.join("tokens.json")
 }
 
 /// Persists the given UserData (tokens) to the token cache file in pretty JSON.
@@ -468,23 +473,33 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
 
 
 pub fn default_cache_dir() -> PathBuf {
-    if let Some(dir) = load_paths_config().cache_dir {
-        if !dir.trim().is_empty() { return PathBuf::from(dir); }
+    // Debug: project-local directory for easy inspection during development
+    if cfg!(debug_assertions) {
+        return PathBuf::from(DEFAULT_CACHE_DIR_NAME);
     }
-    if let Ok(val) = std::env::var("EGS_CACHE_DIR") {
-        if !val.trim().is_empty() { return PathBuf::from(val); }
-    }
-    PathBuf::from(DEFAULT_CACHE_DIR_NAME)
+    // Release: XDG cache: $XDG_CACHE_HOME/egs-client (fallback ~/.cache/egs-client)
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(|| PathBuf::from(".cache"));
+    base.join("egs-client")
 }
 
 pub fn default_downloads_dir() -> PathBuf {
-    if let Some(dir) = load_paths_config().downloads_dir {
-        if !dir.trim().is_empty() { return PathBuf::from(dir); }
+    // Debug: project-local directory for easy inspection during development
+    if cfg!(debug_assertions) {
+        return PathBuf::from(DEFAULT_DOWNLOADS_DIR_NAME);
     }
-    if let Ok(val) = std::env::var("EGS_DOWNLOADS_DIR") {
-        if !val.trim().is_empty() { return PathBuf::from(val); }
-    }
-    PathBuf::from(DEFAULT_DOWNLOADS_DIR_NAME)
+    // Release: XDG data dir: $XDG_DATA_HOME/egs-client/downloads (fallback ~/.local/share/egs-client/downloads)
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local").join("share")))
+        .unwrap_or_else(|| PathBuf::from(".local/share"));
+    base.join("egs-client").join(DEFAULT_DOWNLOADS_DIR_NAME)
 }
 
 pub fn fab_cache_file() -> PathBuf {
@@ -897,11 +912,23 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
 }
 
 pub fn config_file_path() -> PathBuf {
-    // Store under local cache directory name (not affected by runtime config)
-    let mut p = PathBuf::from(DEFAULT_CACHE_DIR_NAME);
-    let _ = std::fs::create_dir_all(&p);
-    p.push("config.json");
-    p
+    // In debug builds, use local config under project cache
+    if cfg!(debug_assertions) {
+        let mut p = PathBuf::from(DEFAULT_CACHE_DIR_NAME);
+        let _ = std::fs::create_dir_all(&p);
+        p.push("config.json");
+        return p;
+    }
+    // Production: XDG config: $XDG_CONFIG_HOME/egs-client/config.json (fallback ~/.config/egs-client/config.json)
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+    let dir = base.join("egs-client");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("config.json")
 }
 
 pub fn load_paths_config() -> models::PathsConfig {

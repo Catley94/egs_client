@@ -32,7 +32,7 @@ mod models;
 // Dev (debug build): typically points to a debug bundle output from `flutter build linux --debug`.
 pub const DEV_FLUTTER_APP_PATH: &str = "Flutter_EGL/build/linux/x64/debug/bundle/test_app_ui";
 // Prod (release build): typically points to a release bundle output from `flutter build linux --release`.
-pub const PROD_FLUTTER_APP_PATH: &str = "Flutter_EGL/build/linux/x64/release/bundle/test_app_ui";
+pub const PROD_FLUTTER_APP_PATH: &str = "client/test_app_ui";
 
 use actix_web::{App, HttpServer};
 use std::env;
