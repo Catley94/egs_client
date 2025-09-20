@@ -61,7 +61,7 @@ class AppImageCache {
                 : (home != null && home.isNotEmpty)
                     ? p.join(home, '.cache')
                     : '.cache';
-            baseDir = Directory(p.join(basePath, 'egs-client'));
+            baseDir = Directory(p.join(basePath, 'egs_client'));
           } else {
             baseDir = await getApplicationSupportDirectory();
           }

@@ -127,3 +127,4 @@ app.*.symbols
 !/dev/ci/**/Gemfile.lock
 /.idea
 cache/home/.egs_client_tokens.json
+/cache

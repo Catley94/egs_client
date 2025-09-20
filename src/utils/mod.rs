@@ -7,7 +7,7 @@
 //! - Robust downloader assembling files from chunk parts described by a DownloadManifest
 //!
 //! Key concepts and files:
-//! - Token cache: ~/.egs_client_tokens.json (0600 on Unix)
+//! - Token cache (dev): ./cache/.egs_client_tokens.json (0600 on Unix)
 //! - Fab cache (used by api.rs): cache/fab_list.json
 //! - Download output structure: downloads/<Asset Title>/data/...
 //!
@@ -98,15 +98,15 @@ pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec
 /// Returns the filesystem path for the local token cache file.
 ///
 /// Current behavior:
-/// - Uses $HOME/.egs_client_tokens.json when HOME is set.
-/// - Falls back to ./.egs_client_tokens.json otherwise.
+/// - In dev (debug builds), uses ./cache/.egs_client_tokens.json within the project directory.
+/// - In release, uses XDG config: $XDG_CONFIG_HOME/egs-client/tokens.json (fallback ~/.config/egs-client/tokens.json)
 ///
 /// Future improvements (TODO):
-/// - Move to a proper cache/config directory and provide a "clear credentials" helper.
+/// - Provide a "clear credentials" helper.
 fn token_cache_path() -> PathBuf {
-    // In debug builds, prefer a project-local token file
+    // In debug builds, prefer a project-local cache file under ./cache
     if cfg!(debug_assertions) {
-        return PathBuf::from(".egs_client_tokens.json");
+        return PathBuf::from("cache/.egs_client_tokens.json");
     }
     // Production/default: XDG config: $XDG_CONFIG_HOME/egs-client/tokens.json (fallback ~/.config/egs-client/tokens.json)
     let base = std::env::var("XDG_CONFIG_HOME")
