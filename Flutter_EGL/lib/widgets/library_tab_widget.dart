@@ -468,11 +468,11 @@ class _LibraryTabState extends State<LibraryTab> {
             const SizedBox(height: 10),
             LayoutBuilder(
               builder: (context, constraints) {
-                const tileMinWidth = 115.0;
-                const spacing = 10.0;
+                const tileMinWidth = 95.0;
+                const spacing = 8.0;
                 final count = (constraints.maxWidth / (tileMinWidth + spacing))
                     .floor()
-                    .clamp(1, 6);
+                    .clamp(1, 8);
                 return FutureBuilder<List<UnrealEngineInfo>>(
                   future: _enginesFuture,
                   builder: (context, snapshot) {
@@ -552,11 +552,11 @@ class _LibraryTabState extends State<LibraryTab> {
             const SizedBox(height: 10),
             LayoutBuilder(
               builder: (context, constraints) {
-                const tileMinWidth = 115.0;
-                const spacing = 10.0;
+                const tileMinWidth = 95.0;
+                const spacing = 8.0;
                 final count = (constraints.maxWidth / (tileMinWidth + spacing))
                     .floor()
-                    .clamp(1, 6);
+                    .clamp(1, 8);
                 return FutureBuilder<List<UnrealProjectInfo>>(
                   future: _projectsFuture,
                   builder: (context, snapshot) {
