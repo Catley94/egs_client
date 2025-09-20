@@ -1,29 +1,17 @@
 import 'package:flutter/material.dart';
+import 'app_theme.dart';
 
-/// Centralized app color definitions for easy theming.
-/// Update these values to change the look across the app.
+/// DEPRECATED: AppColors is kept as a thin shim for backward compatibility.
+/// All color constants/utilities now live in AppPalette (see app_theme.dart).
 class AppColors {
-  // Core surfaces
-  static const Color background = Color(0xFF12151A);
-  static const Color surface = Color(0xFF171B21);
-  static const Color border = Color(0xFF1A2027);
+  // Avoid fixed surface/header/border colors; use Theme.of(context).colorScheme.* instead.
 
-  // Section header text color
-  static const Color sectionHeader = Color(0xFFE5EAF0);
-  static const Color sectionSubtle = Color(0xFF9AA6B2);
+  // Tile base colors are forwarded to AppPalette to keep a single source of truth.
+  static const Color engineTileBase = AppPalette.engineTileBase;
+  static const Color projectTileBase = AppPalette.projectTileBase;
+  static const Color fabTileBase = AppPalette.fabTileBase;
 
-  // Tiles base colors
-  // Engine tiles keep a cool blue tone
-  static const Color engineTileBase = Color(0xFF2563EB); // Blue 600
-  // Project tiles use a warm yellow tone to clearly differ from engine tiles
-  static const Color projectTileBase = Color(0xFFF59E0B); // Amber 500
-
-  // Optional: Fab/asset tile base (if needed later)
-  static const Color fabTileBase = Color(0xFF22C55E); // Green 500
-
-  // Utility method: generate a subtle shade variation for grids
-  static Color varied(Color base, int index, {int cycle = 5, double t = 0.15}) {
-    final double factor = ((index % cycle) / cycle) * t;
-    return Color.lerp(base, Colors.white, factor) ?? base;
-  }
+  // Utility method delegates to AppPalette.varied
+  static Color varied(Color base, int index, {int cycle = 5, double t = 0.15}) =>
+      AppPalette.varied(base, index, cycle: cycle, t: t);
 }

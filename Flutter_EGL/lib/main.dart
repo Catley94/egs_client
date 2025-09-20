@@ -6,6 +6,8 @@ import 'services/image_cache.dart';
 import 'package:window_size/window_size.dart' as window_size;
 import 'package:window_manager/window_manager.dart';
 import 'package:test_app_ui/widgets/unreal_engine.dart';
+import 'theme/app_theme.dart';
+import 'theme/theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,39 +48,36 @@ class NavigationRailExampleApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      builder: (context, child) {
-        if (child == null) return const SizedBox.shrink();
-        return Stack(
-          children: [
-            child,
-            if (kDebugMode)
-              Positioned(
-                left: 0,
-                bottom: 0,
-                child: IgnorePointer(
-                  child: Banner(
-                    message: 'DEBUG',
-                    location: BannerLocation.bottomStart,
+    return ListenableBuilder(
+      listenable: ThemeController.instance.mode,
+      builder: (context, _) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          builder: (context, child) {
+            if (child == null) return const SizedBox.shrink();
+            return Stack(
+              children: [
+                child,
+                if (kDebugMode)
+                  Positioned(
+                    left: 0,
+                    bottom: 0,
+                    child: IgnorePointer(
+                      child: Banner(
+                        message: 'DEBUG',
+                        location: BannerLocation.bottomStart,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-          ],
+              ],
+            );
+          },
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: ThemeController.instance.mode.value,
+          home: const NavRailExample(),
         );
       },
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        colorScheme: const ColorScheme.dark(
-          background: Color(0xFF0F1115), // near-black app bg
-          surface: Color(0xFF12151A),    // panels / header
-          primary: Color(0xFF2E95FF),    // Epic-like blue accent
-          secondary: Color(0xFF2E95FF),
-        ),
-        scaffoldBackgroundColor: const Color(0xFF0F1115),
-      ),
-      home: const NavRailExample(),
     );
   }
 }
@@ -126,19 +125,19 @@ class _NavRailExampleState extends State<NavRailExample> {
                     labelType: _railExpanded
                         ? NavigationRailLabelType.none
                         : NavigationRailLabelType.all,
-                    backgroundColor: const Color(0xFF0A0C10), // darker left rail
+                    backgroundColor: cs.surface,
                     extended: _railExpanded,
                     minExtendedWidth: 220,
                     indicatorColor: cs.primary.withOpacity(0.18),
                     selectedIconTheme: IconThemeData(color: cs.primary, size: 24),
                     unselectedIconTheme:
-                        const IconThemeData(color: Color(0xFF9AA4AF), size: 24),
+                        IconThemeData(color: cs.onSurfaceVariant, size: 24),
                     selectedLabelTextStyle: TextStyle(
                       color: cs.primary,
                       fontWeight: FontWeight.w600,
                     ),
-                    unselectedLabelTextStyle: const TextStyle(
-                      color: Color(0xFFB7C0CA),
+                    unselectedLabelTextStyle: TextStyle(
+                      color: cs.onSurfaceVariant,
                     ),
                     leading: Padding(
                       padding: const EdgeInsets.only(top: 8.0),
@@ -190,20 +189,27 @@ class _NavRailExampleState extends State<NavRailExample> {
                           child: Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(16),
-                            decoration: const BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [
-                                  Color(0x11182532),
-                                  Color(0x000F1115),
-                                ],
-                              ),
-                            ),
+                            color: cs.background,
+                            // In dark mode we used to show a subtle gradient; for clarity and
+                            // theme consistency we use plain background from ColorScheme.
+                            // If a gradient is desired in dark mode only, we can re-introduce it
+                            // conditionally.
+                            // decoration: Theme.of(context).brightness == Brightness.dark
+                            //     ? const BoxDecoration(
+                            //         gradient: LinearGradient(
+                            //           begin: Alignment.topCenter,
+                            //           end: Alignment.bottomCenter,
+                            //           colors: [
+                            //             Color(0x11182532),
+                            //             Color(0x000F1115),
+                            //           ],
+                            //         ),
+                            //       )
+                            //     : null,
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(12),
                               child: Container(
-                                color: const Color(0xFF12151A),
+                                color: cs.surface,
                                 child: _mainContents[_selectedIndex],
                               ),
                             ),

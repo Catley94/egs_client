@@ -6,7 +6,8 @@ import 'fab_library_item.dart';
 import '../services/api_service.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
-import '../theme/app_colors.dart';
+import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -332,6 +333,27 @@ class _LibraryTabState extends State<LibraryTab> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                // Theme selection
+                Row(
+                  children: [
+                    const Icon(Icons.brightness_6_outlined),
+                    const SizedBox(width: 8),
+                    const Text('Theme'),
+                    const SizedBox(width: 12),
+                    DropdownButton<ThemeMode>(
+                      value: ThemeController.instance.mode.value,
+                      items: const [
+                        DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
+                        DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
+                        DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
+                      ],
+                      onChanged: (mode) {
+                        if (mode != null) ThemeController.instance.set(mode);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Row(
@@ -462,7 +484,7 @@ class _LibraryTabState extends State<LibraryTab> {
               'Engine Versions',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w800,
-                    color: AppColors.sectionHeader,
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
             ),
             const SizedBox(height: 10),
@@ -507,7 +529,7 @@ class _LibraryTabState extends State<LibraryTab> {
                         return _ProjectTile(
                           name: e.name,
                           version: e.version.isEmpty ? 'unknown' : 'UE ${e.version}',
-                          color: AppColors.varied(AppColors.engineTileBase, index, cycle: 5, t: 0.2),
+                          color: AppPalette.varied(AppPalette.engineTileBase, index, cycle: 5, t: 0.2),
                           onTap: () async {
                             if (_opening) return;
                             if (e.version.isEmpty) {
@@ -546,7 +568,7 @@ class _LibraryTabState extends State<LibraryTab> {
               'My Projects',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w800,
-                    color: AppColors.sectionHeader,
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
             ),
             const SizedBox(height: 10),
@@ -591,7 +613,7 @@ class _LibraryTabState extends State<LibraryTab> {
                         return _ProjectTile(
                           name: p.name.isEmpty ? p.uprojectFile.split('/').last : p.name,
                           version: p.engineVersion.isNotEmpty ? 'UE ${p.engineVersion}' : 'UE unknown',
-                          color: AppColors.varied(AppColors.projectTileBase, index, cycle: 5, t: 0.25),
+                          color: AppPalette.varied(AppPalette.projectTileBase, index, cycle: 5, t: 0.25),
                           onTap: () async {
                             if (_opening) return;
                             setState(() => _opening = true);
@@ -640,9 +662,9 @@ class _LibraryTabState extends State<LibraryTab> {
                 Text(
                   'Fab Library',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.sectionHeader,
-                      ),
+                    fontWeight: FontWeight.w800,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
                 ),
                 const SizedBox(width: 16),
                 // Search bar
@@ -1961,7 +1983,7 @@ class _ProjectTile extends StatelessWidget {
               Container(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.border),
+                  border: Border.all(color: cs.outlineVariant),
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,

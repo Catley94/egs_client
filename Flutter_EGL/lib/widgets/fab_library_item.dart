@@ -33,9 +33,9 @@ class FabLibraryItem extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF0F1115),
+          color: cs.surface,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFF1A2027)),
+          border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
         ),
         padding: const EdgeInsets.all(12),
         child: Row(
@@ -51,8 +51,8 @@ class FabLibraryItem extends StatelessWidget {
                   width: 112,
                   height: 112,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1F2933),
-                    border: Border.all(color: const Color(0xFF1A2027)),
+                    color: Theme.of(context).colorScheme.surfaceVariant,
+                    border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                   ),
                   child: (thumbnailUrl != null && thumbnailUrl!.isNotEmpty)
                       ? CachedNetworkImage(
@@ -60,9 +60,9 @@ class FabLibraryItem extends StatelessWidget {
                           cacheManager: AppImageCache.manager,
                           fit: BoxFit.cover,
                           placeholder: (context, url) => const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
-                          errorWidget: (context, url, error) => const Icon(Icons.broken_image, size: 40, color: Color(0xFF9AA4AF)),
+                          errorWidget: (context, url, error) => Icon(Icons.broken_image, size: 40, color: cs.onSurfaceVariant),
                         )
-                      : const Icon(Icons.image, size: 40, color: Color(0xFF9AA4AF)),
+                      : Icon(Icons.image, size: 40, color: cs.onSurfaceVariant),
                 ),
               ),
               if (downloaded)
@@ -74,7 +74,7 @@ class FabLibraryItem extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.green.shade600,
                       shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF0F1115), width: 2),
+                      border: Border.all(color: cs.surface, width: 2),
                     ),
                     child: const Icon(Icons.check, size: 14, color: Colors.white),
                   ),
@@ -101,8 +101,8 @@ class FabLibraryItem extends StatelessWidget {
                   child: FilledButton.icon(
                     style: useWarningStyle
                         ? FilledButton.styleFrom(
-                            backgroundColor: Colors.blueGrey.shade700,
-                            foregroundColor: Colors.black,
+                            backgroundColor: cs.secondaryContainer,
+                            foregroundColor: cs.onSecondaryContainer,
                           )
                         : null,
                     onPressed: isBusy
