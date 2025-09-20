@@ -1922,48 +1922,107 @@ class _ProjectTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final bgStart = Color.lerp(color, cs.surfaceVariant, 0.25)!;
+    final bgEnd = Color.lerp(color, cs.primary, 0.25)!;
+
+    Widget unrealBadge({double size = 36, double opacity = 0.10}) {
+      return Opacity(
+        opacity: opacity,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withOpacity(0.04),
+            border: Border.all(color: Colors.white.withOpacity(0.15), width: 1.0),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            'U',
+            style: TextStyle(
+              fontSize: size * 0.6,
+              fontWeight: FontWeight.w800,
+              color: Colors.white.withOpacity(0.8),
+              height: 1.0,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Square thumbnail with version tag
+        // Square thumbnail with Unreal watermark and version chip
         AspectRatio(
           aspectRatio: 1,
           child: Stack(
             children: [
+              // Gradient background instead of flat blue
               Container(
                 decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: const Color(0xFF1A2027)),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [bgStart, bgEnd],
+                  ),
                 ),
-                // Placeholder for a future screenshot/thumbnail
               ),
+              // Subtle corner glow to add depth
+              Positioned(
+                left: -30,
+                top: -30,
+                child: Container(
+                  width: 120,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: cs.primary.withOpacity(0.10),
+                  ),
+                ),
+              ),
+              // Centered Unreal badge watermark
+              Center(child: unrealBadge(size: 56, opacity: 0.18)),
+
+              // Version chip with small Unreal badge
               Positioned(
                 right: 8,
                 bottom: 8,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: cs.primary.withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(6),
+                    color: cs.surface.withOpacity(0.85),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: cs.outlineVariant.withOpacity(0.5)),
                   ),
-                  child: Text(
-                    version,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Tiny badge
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: unrealBadge(size: 16, opacity: 1.0),
+                      ),
+                      Text(
+                        version,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ) ?? const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+                      ),
+                    ],
                   ),
                 ),
               ),
+
               // Full-surface tappable overlay with ripple
               Positioned.fill(
                 child: Material(
                   color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(12),
                   child: InkWell(
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(12),
                     onTap: onTap,
                   ),
                 ),
