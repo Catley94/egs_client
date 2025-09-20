@@ -94,7 +94,7 @@ class _NavRailExampleState extends State<NavRailExample> {
   int _selectedIndex = 0;
   double groupAlignment = -1.0;
 
-  bool _railExpanded = true;
+  bool _railExpanded = false;
 
   // Add a list of widgets for the main content
   final List<Widget> _mainContents = const [
@@ -164,17 +164,6 @@ class _NavRailExampleState extends State<NavRailExample> {
                                       ),
                                     ),
                                   ),
-                                IconButton(
-                                  tooltip: _railExpanded ? 'Collapse' : 'Expand',
-                                  icon: Icon(
-                                    _railExpanded
-                                        ? Icons.chevron_left
-                                        : Icons.chevron_right,
-                                    size: 20,
-                                  ),
-                                  onPressed: () =>
-                                      setState(() => _railExpanded = !_railExpanded),
-                                ),
                               ],
                             ),
                           ),
@@ -182,22 +171,7 @@ class _NavRailExampleState extends State<NavRailExample> {
                         ],
                       ),
                     ),
-                    trailing: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12.0),
-                      child: _railExpanded
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: const [
-                                CircleAvatar(
-                                  radius: 16,
-                                  child: Text('JD', style: TextStyle(fontSize: 12)),
-                                ),
-                                SizedBox(height: 8),
-                                Text('Signed In', style: TextStyle(fontSize: 12)),
-                              ],
-                            )
-                          : const CircleAvatar(radius: 16, child: Text('JD')),
-                    ),
+                    trailing: const SizedBox.shrink(),
                     destinations: const <NavigationRailDestination>[
                       NavigationRailDestination(
                         icon: Icon(Icons.bookmark_border),
