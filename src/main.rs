@@ -90,14 +90,37 @@ fn parse_mode() -> RunMode {
 }
 
 fn resolve_flutter_binary() -> Option<PathBuf> {
-    // Highest priority: explicit env override.
+    // Determine the directory of the running executable for exe-relative resolution
+    let exe_dir = match env::current_exe() {
+        Ok(p) => p.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")),
+        Err(_) => PathBuf::from("."),
+    };
+
+    // Helper: try a path as-is and, if relative, also relative to the executable dir
+    fn try_paths<'a>(exe_dir: &Path, candidate: &'a Path) -> Option<PathBuf> {
+        if candidate.exists() {
+            return Some(candidate.to_path_buf());
+        }
+        if !candidate.is_absolute() {
+            let joined = exe_dir.join(candidate);
+            if joined.exists() {
+                return Some(joined);
+            }
+        }
+        None
+    }
+
+    // Highest priority: explicit env override (support relative to exe dir)
     if let Ok(p) = env::var("FLUTTER_APP_PATH") {
         let pb = PathBuf::from(p);
-        if pb.exists() {
-            println!("Flutter binary: using FLUTTER_APP_PATH override: {}", pb.display());
-            return Some(pb);
+        if let Some(found) = try_paths(&exe_dir, &pb) {
+            println!("Flutter binary: using FLUTTER_APP_PATH override: {}", found.display());
+            return Some(found);
         } else {
-            eprintln!("FLUTTER_APP_PATH is set but path does not exist: {}", pb.display());
+            eprintln!(
+                "FLUTTER_APP_PATH is set but path does not exist (checked absolute and exe-relative): {}",
+                pb.display()
+            );
         }
     }
 
@@ -116,14 +139,11 @@ fn resolve_flutter_binary() -> Option<PathBuf> {
     };
     for c in mode_pref {
         let p = Path::new(c);
-        if p.exists() {
-            println!(
-                "Flutter binary: selected {} (exists)",
-                p.display()
-            );
-            return Some(p.to_path_buf());
+        if let Some(found) = try_paths(&exe_dir, p) {
+            println!("Flutter binary: selected {} (exists)", found.display());
+            return Some(found);
         } else {
-            println!("Flutter binary candidate not found: {}", p.display());
+            println!("Flutter binary candidate not found: {} (tested as-is and exe-relative)", p.display());
         }
     }
 
@@ -139,11 +159,11 @@ fn resolve_flutter_binary() -> Option<PathBuf> {
         ];
         for c in candidates {
             let p = Path::new(c);
-            if p.exists() {
-                println!("Flutter binary: selected fallback candidate: {}", p.display());
-                return Some(p.to_path_buf());
+            if let Some(found) = try_paths(&exe_dir, p) {
+                println!("Flutter binary: selected fallback candidate: {}", found.display());
+                return Some(found);
             } else {
-                println!("Flutter binary fallback candidate not found: {}", p.display());
+                println!("Flutter binary fallback candidate not found: {} (tested as-is and exe-relative)", p.display());
             }
         }
     }
@@ -325,14 +345,10 @@ async fn main() -> std::io::Result<()> {
                 // Ctrl+C handling: stop server and kill Flutter child if present
                 {
                     let flutter_child = Arc::clone(&flutter_child);
-                    let srv_handle = srv.handle();
                     let _ = ctrlc::set_handler(move || {
                         eprintln!("\nCtrl+C received — shutting down...");
-                        // Stop server gracefully (spawn async task to await)
-                        let handle = srv_handle.clone();
-                        tokio::spawn(async move {
-                            handle.stop(true).await;
-                        });
+                        // Request Actix system stop (thread-safe); avoids needing a Tokio runtime here
+                        actix_web::rt::System::current().stop();
                         // Kill Flutter child if running
                         if let Ok(mut guard) = flutter_child.lock() {
                             if let Some(child) = guard.as_mut() {
