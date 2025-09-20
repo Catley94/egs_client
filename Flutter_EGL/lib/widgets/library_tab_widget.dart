@@ -6,6 +6,7 @@ import 'fab_library_item.dart';
 import '../services/api_service.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
+import '../theme/app_colors.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -456,17 +457,19 @@ class _LibraryTabState extends State<LibraryTab> {
             ),
 
             // Engine Versions grid (new)
+            const Divider(height: 24),
             Text(
               'Engine Versions',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.sectionHeader,
                   ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             LayoutBuilder(
               builder: (context, constraints) {
-                const tileMinWidth = 140.0;
-                const spacing = 12.0;
+                const tileMinWidth = 115.0;
+                const spacing = 10.0;
                 final count = (constraints.maxWidth / (tileMinWidth + spacing))
                     .floor()
                     .clamp(1, 6);
@@ -504,11 +507,7 @@ class _LibraryTabState extends State<LibraryTab> {
                         return _ProjectTile(
                           name: e.name,
                           version: e.version.isEmpty ? 'unknown' : 'UE ${e.version}',
-                          color: Color.lerp(
-                            const Color(0xFF1F2933),
-                            cs.primary,
-                            (index % 5) / 5.0,
-                          )!,
+                          color: AppColors.varied(AppColors.engineTileBase, index, cycle: 5, t: 0.2),
                           onTap: () async {
                             if (_opening) return;
                             if (e.version.isEmpty) {
@@ -542,17 +541,19 @@ class _LibraryTabState extends State<LibraryTab> {
             ),
             const SizedBox(height: 24),
             // My Projects grid (kept)
+            const Divider(height: 24),
             Text(
               'My Projects',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.sectionHeader,
                   ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             LayoutBuilder(
               builder: (context, constraints) {
-                const tileMinWidth = 140.0;
-                const spacing = 12.0;
+                const tileMinWidth = 115.0;
+                const spacing = 10.0;
                 final count = (constraints.maxWidth / (tileMinWidth + spacing))
                     .floor()
                     .clamp(1, 6);
@@ -590,11 +591,7 @@ class _LibraryTabState extends State<LibraryTab> {
                         return _ProjectTile(
                           name: p.name.isEmpty ? p.uprojectFile.split('/').last : p.name,
                           version: p.engineVersion.isNotEmpty ? 'UE ${p.engineVersion}' : 'UE unknown',
-                          color: Color.lerp(
-                            const Color(0xFF1F2933),
-                            cs.primary,
-                            (index % 5) / 5.0,
-                          )!,
+                          color: AppColors.varied(AppColors.projectTileBase, index, cycle: 5, t: 0.25),
                           onTap: () async {
                             if (_opening) return;
                             setState(() => _opening = true);
@@ -637,12 +634,14 @@ class _LibraryTabState extends State<LibraryTab> {
             ),
             const SizedBox(height: 24),
             // Header row for filters/actions
+            const Divider(height: 24),
             Row(
               children: [
                 Text(
                   'Fab Library',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.sectionHeader,
                       ),
                 ),
                 const SizedBox(width: 16),
@@ -1922,8 +1921,8 @@ class _ProjectTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final bgStart = Color.lerp(color, cs.surfaceVariant, 0.25)!;
-    final bgEnd = Color.lerp(color, cs.primary, 0.25)!;
+    final bgStart = Color.lerp(color, Colors.black, 0.20)!;
+    final bgEnd = Color.lerp(color, Colors.white, 0.06)!;
 
     Widget unrealBadge({double size = 36, double opacity = 0.10}) {
       return Opacity(
@@ -1962,7 +1961,7 @@ class _ProjectTile extends StatelessWidget {
               Container(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF1A2027)),
+                  border: Border.all(color: AppColors.border),
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
@@ -1979,7 +1978,7 @@ class _ProjectTile extends StatelessWidget {
                   height: 120,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: cs.primary.withOpacity(0.10),
+                    color: color.withOpacity(0.10),
                   ),
                 ),
               ),
