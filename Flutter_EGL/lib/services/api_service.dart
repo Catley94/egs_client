@@ -191,6 +191,32 @@ class ApiService {
     }
   }
 
+  Future<List<FabAsset>> refreshFabList() async {
+    final uri = _uri('/refresh-fab-list');
+    final res = await http.get(uri);
+    if (res.statusCode == 401 || res.statusCode == 403) {
+      try {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final parsed = (data['auth_url']?.toString() ?? '').trim();
+        final authUrl = parsed.isNotEmpty ? parsed : kEpicLoginUrl;
+        throw UnauthenticatedException(authUrl: authUrl, message: data['message']?.toString());
+      } catch (_) {
+        throw UnauthenticatedException(authUrl: kEpicLoginUrl);
+      }
+    }
+    if (res.statusCode != 200) {
+      // Surface server error
+      throw Exception('Failed to refresh Fab library: ${res.statusCode} ${res.body}');
+    }
+    final dynamic decoded = jsonDecode(res.body);
+    if (decoded is Map<String, dynamic>) {
+      final lib = FabLibraryResponse.fromJson(decoded);
+      return lib.results;
+    } else {
+      return <FabAsset>[];
+    }
+  }
+
   Future<AuthStart> getAuthStart() async {
     final res = await http.get(_uri('/auth/start'));
     if (res.statusCode != 200) {

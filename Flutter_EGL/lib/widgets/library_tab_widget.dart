@@ -206,6 +206,7 @@ class _LibraryTabState extends State<LibraryTab> {
   // cache of engines for deciding version on open
   List<UnrealEngineInfo> _engines = const [];
   bool _opening = false;
+  bool _refreshingFab = false;
 
   // Settings: user-configurable paths
   final TextEditingController _projectsDirCtrl = TextEditingController();
@@ -327,6 +328,51 @@ class _LibraryTabState extends State<LibraryTab> {
                   decoration: const InputDecoration(
                     labelText: 'Downloads directory',
                     hintText: './downloads',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _refreshingFab
+                            ? null
+                            : () async {
+                                setState(() {
+                                  _refreshingFab = true;
+                                });
+                                try {
+                                  final items = await _api.refreshFabList();
+                                  if (mounted) {
+                                    setState(() {
+                                      _fabFuture = Future.value(items);
+                                    });
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Fab list refreshed (' + items.length.toString() + ' items)')),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Failed to refresh Fab list: ' + e.toString())),
+                                    );
+                                  }
+                                } finally {
+                                  if (mounted) {
+                                    setState(() {
+                                      _refreshingFab = false;
+                                    });
+                                  }
+                                }
+                              },
+                        icon: _refreshingFab
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.refresh),
+                        label: const Text('Refresh Fab List'),
+                      ),
+                    ],
                   ),
                 ),
               ],
