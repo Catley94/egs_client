@@ -511,6 +511,9 @@ class CreateProjectResult {
 
   CreateProjectResult({required this.ok, required this.message, this.command, this.projectPath});
 
+    // Backwards-compatible alias expected by some UI code
+    bool get success => ok;
+
   factory CreateProjectResult.fromJson(Map<String, dynamic> json) {
     return CreateProjectResult(
       ok: json['ok'] as bool? ?? false,
@@ -564,6 +567,41 @@ extension CreateUnrealProjectApi on ApiService {
       return CreateProjectResult.fromJson(data);
     } catch (_) {
       return CreateProjectResult(ok: true, message: body.isNotEmpty ? body : 'OK', command: null, projectPath: null);
+    }
+  }
+}
+
+
+class RefreshFabAssetResult {
+  final bool success;
+  final String message;
+  final bool anyDownloaded;
+  RefreshFabAssetResult({required this.success, required this.message, required this.anyDownloaded});
+}
+
+extension RefreshFabAssetApi on ApiService {
+  Future<RefreshFabAssetResult> refreshFabAsset({required String assetNamespace, required String assetId}) async {
+    try {
+      // Backend single-asset refresh endpoint not available; refresh whole list and read the asset state
+      final list = await refreshFabList();
+      final asset = list.firstWhere(
+        (e) => e.assetNamespace == assetNamespace && e.assetId == assetId,
+        orElse: () => FabAsset(
+          title: '',
+          description: '',
+          assetId: assetId,
+          assetNamespace: assetNamespace,
+          source: 'fab',
+          url: null,
+          distributionMethod: '',
+          images: const [],
+          projectVersions: const [],
+        ),
+      );
+      final anyDownloaded = asset.anyDownloaded;
+      return RefreshFabAssetResult(success: true, message: '', anyDownloaded: anyDownloaded);
+    } catch (e) {
+      return RefreshFabAssetResult(success: false, message: e.toString(), anyDownloaded: false);
     }
   }
 }

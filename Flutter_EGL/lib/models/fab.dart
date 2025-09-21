@@ -133,3 +133,8 @@ class FabAsset {
     return 'UE: $shown${sorted.length > 4 ? '…' : ''}';
   }
 }
+
+extension FabAssetExtras on FabAsset {
+  // Currently we don't get size information from the backend; return empty label to avoid UI crashes.
+  String get sizeLabel => '';
+}

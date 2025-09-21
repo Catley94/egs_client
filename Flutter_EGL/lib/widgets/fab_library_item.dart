@@ -95,9 +95,9 @@ class FabLibraryItem extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 SizedBox(
-                  height: 36,
+                  height: 32,
                   child: FilledButton.icon(
                     style: useWarningStyle
                         ? FilledButton.styleFrom(
@@ -125,9 +125,11 @@ class FabLibraryItem extends StatelessWidget {
                     label: Text(isCompleteProject ? 'Create Project' : 'Import Asset'),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   sizeLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: cs.onSurfaceVariant,
                   ),

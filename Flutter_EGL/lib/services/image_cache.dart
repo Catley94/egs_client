@@ -24,7 +24,9 @@ class AppImageCache {
   static CacheManager get manager {
     final m = _manager;
     if (m == null) {
-      throw StateError('AppImageCache not initialized. Call AppImageCache.init() before runApp().');
+      throw StateError(
+        'AppImageCache not initialized. Call AppImageCache.init() before runApp().',
+      );
     }
     return m;
   }
@@ -32,7 +34,9 @@ class AppImageCache {
   static String get directoryPath {
     final d = _dirPath;
     if (d == null) {
-      throw StateError('AppImageCache not initialized. Call AppImageCache.init() before runApp().');
+      throw StateError(
+        'AppImageCache not initialized. Call AppImageCache.init() before runApp().',
+      );
     }
     return d;
   }
@@ -59,8 +63,8 @@ class AppImageCache {
             final basePath = (xdg != null && xdg.isNotEmpty)
                 ? xdg
                 : (home != null && home.isNotEmpty)
-                    ? p.join(home, '.cache')
-                    : '.cache';
+                ? p.join(home, '.cache')
+                : '.cache';
             baseDir = Directory(p.join(basePath, 'egs_client'));
           } else {
             baseDir = await getApplicationSupportDirectory();
@@ -73,7 +77,9 @@ class AppImageCache {
 
     final cacheDir = Directory(p.join(baseDir.path, 'image_cache'));
     if (!await cacheDir.exists()) {
-      try { await cacheDir.create(recursive: true); } catch (_) {}
+      try {
+        await cacheDir.create(recursive: true);
+      } catch (_) {}
     }
     _dirPath = cacheDir.path;
 
