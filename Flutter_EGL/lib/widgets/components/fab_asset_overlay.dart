@@ -309,6 +309,7 @@ Future<void> showFabAssetOverlayDialog({
                             label: const Text('Download'),
                           ),
                           const SizedBox(width: 8),
+                          // Open in Browser
                           FilledButton.icon(
                             onPressed: working ? null : () async {
                               setStateSB(() => working = true);

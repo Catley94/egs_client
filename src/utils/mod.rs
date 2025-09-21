@@ -204,6 +204,10 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     let temp_dir = out_root.parent().map(|p| p.join("temp")).unwrap_or_else(|| out_root.join("temp"));
     std::fs::create_dir_all(&temp_dir)?;
 
+    // Clear any stale completion marker when starting/resuming a download
+    let complete_marker = out_root.join(".download_complete");
+    let _ = std::fs::remove_file(&complete_marker);
+
     let client = reqwest::Client::new();
 
     let files: Vec<_> = dm.files().into_iter().collect();
@@ -430,6 +434,8 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
         eprintln!("Note: {} of {} files were skipped due to zero chunk parts", skipped_files, total_files);
     }
 
+    // Mark download as complete
+    let _ = std::fs::write(out_root.join(".download_complete"), "ok");
     Ok(())
 }
 
@@ -464,7 +470,7 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
             if !title.is_empty() {
                 let folder = utils::sanitize_title_for_folder(&title);
                 let path = downloads_root.join(folder);
-                if path.exists() { asset_downloaded = true; used_title_folder = true; }
+                if path.exists() && is_download_complete(&path) { asset_downloaded = true; used_title_folder = true; }
             }
 
             if !asset_downloaded {
@@ -474,7 +480,7 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
                         if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
                             let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
                             let path = downloads_root.join(folder);
-                            if path.exists() {
+                            if path.exists() && is_download_complete(&path) {
                                 asset_downloaded = true;
                                 if let Some(obj) = ver.as_object_mut() {
                                     if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
@@ -485,7 +491,7 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
                                 break;
                             } else {
                                 if let Some(obj) = ver.as_object_mut() {
-                                    if obj.get("downloaded").is_none() {
+                                    if obj.get("downloaded").is_none() || obj.get("downloaded").and_then(|v| v.as_bool()).unwrap_or(true) {
                                         obj.insert("downloaded".into(), serde_json::Value::Bool(false));
                                         changed = true;
                                     }
@@ -554,6 +560,28 @@ pub fn default_downloads_dir() -> PathBuf {
         .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local").join("share")))
         .unwrap_or_else(|| PathBuf::from(".local/share"));
     base.join("egs_client").join(DEFAULT_DOWNLOADS_DIR_NAME)
+}
+
+/// Checks whether a download directory contains a completion marker created after a successful download.
+pub fn is_download_complete(root: &Path) -> bool {
+    // Primary: explicit completion marker
+    if root.join(".download_complete").is_file() { return true; }
+    // Legacy heuristic: treat as complete if there are no .part files and there is at least one file under data/
+    let data_dir = root.join("data");
+    if !data_dir.exists() { return false; }
+    let mut has_files = false;
+    let mut has_part = false;
+    if let Ok(iter) = walkdir::WalkDir::new(&root).into_iter().collect::<Result<Vec<_>, _>>() {
+        for entry in iter {
+            if entry.file_type().is_file() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("part") { has_part = true; break; }
+                if p.starts_with(&data_dir) { has_files = true; }
+            }
+        }
+    }
+    if has_part { return false; }
+    has_files
 }
 
 pub fn fab_cache_file() -> PathBuf {
@@ -782,7 +810,7 @@ pub async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&st
             }
         }
     }
-    if asset_dir.exists() { return Ok(asset_dir); }
+    if asset_dir.exists() && is_download_complete(&asset_dir) { return Ok(asset_dir); }
 
     // Authenticate
     let mut epic = utils::create_epic_games_services();

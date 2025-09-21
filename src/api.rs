@@ -779,8 +779,10 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
             }
         }
     }
-    if !asset_dir.exists() {
-        // Attempt to download the asset by name
+    // Ensure the asset is fully downloaded (presence + completion marker)
+    let needs_download = !asset_dir.exists() || !utils::is_download_complete(&asset_dir);
+    if needs_download {
+        // Attempt to download (or resume) the asset by name
         utils::emit_event(job_id.as_deref(), "import:downloading", format!("Downloading missing asset '{}'", safe_name), Some(0.0), None);
         match utils::ensure_asset_downloaded_by_name(safe_name, job_id.as_deref(), "import:downloading").await {
             Ok(path) => {
