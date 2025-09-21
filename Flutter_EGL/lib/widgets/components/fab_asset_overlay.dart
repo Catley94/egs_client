@@ -190,6 +190,8 @@ Future<void> showFabAssetOverlayDialog({
                                       if (a.isCompleteProject) {
                                         final params = await promptCreateProject(context, a);
                                         if (params == null) return;
+                                        final jobId = makeJobId();
+                                        final dlg = showJobProgressDialog(jobId: jobId, title: 'Creating project...');
                                         final res = await api.createUnrealProject(
                                           enginePath: params.enginePath,
                                           templateProject: params.templateProject,
@@ -198,7 +200,13 @@ Future<void> showFabAssetOverlayDialog({
                                           projectName: params.projectName,
                                           projectType: params.projectType,
                                           dryRun: params.dryRun,
+                                          jobId: jobId,
                                         );
+                                        if (context.mounted) {
+                                          final nav = Navigator.of(context, rootNavigator: true);
+                                          if (nav.canPop()) nav.pop();
+                                        }
+                                        await dlg.catchError((_ ){});
                                         if (!context.mounted) return;
                                         final ok = res.success;
                                         final msg = res.message.isNotEmpty ? res.message : (ok ? 'OK' : 'Failed');

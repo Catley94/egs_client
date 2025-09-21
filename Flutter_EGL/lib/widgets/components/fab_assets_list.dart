@@ -285,6 +285,8 @@ class FabAssetsListState extends State<FabAssetsList> {
                       if (params == null) return;
                       setState(() => _busy.add(globalIndex));
                       try {
+                        final jobId = _makeJobId();
+                        final dlg = showJobProgressOverlayDialog(context: context, api: _api, jobId: jobId, title: 'Creating project...');
                         final res = await _api.createUnrealProject(
                           enginePath: params.enginePath,
                           templateProject: params.templateProject,
@@ -293,7 +295,13 @@ class FabAssetsListState extends State<FabAssetsList> {
                           projectName: params.projectName,
                           projectType: params.projectType,
                           dryRun: params.dryRun,
+                          jobId: jobId,
                         );
+                        if (mounted) {
+                          final nav = Navigator.of(context, rootNavigator: true);
+                          if (nav.canPop()) nav.pop();
+                        }
+                        await dlg.catchError((_ ){});
                         if (!mounted) return;
                         final ok = res.success;
                         final msg = res.message.isNotEmpty ? res.message : (ok ? 'OK' : 'Failed');

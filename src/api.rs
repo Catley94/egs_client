@@ -1057,12 +1057,17 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
                 }
             }
         }
-        // If still missing, attempt to download by name first
-        if !asset_dir.exists() {
-            utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), None, None);
+        // If missing or incomplete, attempt to (re)download by name first
+        let needs_download = !asset_dir.exists() || !utils::is_download_complete(&asset_dir);
+        if needs_download {
+            utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), Some(0.0), None);
             match utils::ensure_asset_downloaded_by_name(name, job_id.as_deref(), "create:downloading").await {
                 Ok(p) => { asset_dir = p; utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
-                Err(err) => { eprintln!("{}", err); utils::emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None); }
+                Err(err) => {
+                    eprintln!("{}", err);
+                    utils::emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None);
+                    return HttpResponse::NotFound().body(format!("{}", err));
+                }
             }
         }
         // Log what base/asset dir we ended up with for diagnostics

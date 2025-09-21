@@ -564,24 +564,8 @@ pub fn default_downloads_dir() -> PathBuf {
 
 /// Checks whether a download directory contains a completion marker created after a successful download.
 pub fn is_download_complete(root: &Path) -> bool {
-    // Primary: explicit completion marker
-    if root.join(".download_complete").is_file() { return true; }
-    // Legacy heuristic: treat as complete if there are no .part files and there is at least one file under data/
-    let data_dir = root.join("data");
-    if !data_dir.exists() { return false; }
-    let mut has_files = false;
-    let mut has_part = false;
-    if let Ok(iter) = walkdir::WalkDir::new(&root).into_iter().collect::<Result<Vec<_>, _>>() {
-        for entry in iter {
-            if entry.file_type().is_file() {
-                let p = entry.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("part") { has_part = true; break; }
-                if p.starts_with(&data_dir) { has_files = true; }
-            }
-        }
-    }
-    if has_part { return false; }
-    has_files
+    // Only trust the explicit completion marker to avoid false positives after cancellations.
+    root.join(".download_complete").is_file()
 }
 
 pub fn fab_cache_file() -> PathBuf {
