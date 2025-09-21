@@ -125,10 +125,10 @@ Future<void> showJobProgressOverlayDialog({
                     const SizedBox(height: 12),
                     Row(
                       children: [
-                        Expanded(child: Text(message, overflow: TextOverflow.ellipsis)),
                         if (countsText.isNotEmpty) ...[
                           const SizedBox(width: 12),
-                          Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                          Expanded(child: Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+                          // Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                         ],
                         const SizedBox(width: 8),
                         if (percent != null) Text('${p.floor().toString()}%'),

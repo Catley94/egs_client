@@ -128,12 +128,12 @@ Future<void> showFabAssetOverlayDialog({
                                         backgroundColor: Colors.green.withOpacity(0.15),
                                         side: BorderSide(color: Colors.green.shade700),
                                       ),
-                                    if (a.isCompleteProject)
-                                      Chip(
-                                        label: const Text('Complete Project'),
-                                        backgroundColor: Colors.blue.withOpacity(0.12),
-                                        side: BorderSide(color: Colors.blue.shade700),
-                                      ),
+                                    // if (a.isCompleteProject)
+                                    //   Chip(
+                                    //     label: const Text('Complete Project'),
+                                    //     backgroundColor: Colors.blue.withOpacity(0.12),
+                                    //     side: BorderSide(color: Colors.blue.shade700),
+                                    //   ),
                                     if (a.sizeLabel.isNotEmpty)
                                       Chip(
                                         label: Text(a.sizeLabel),
