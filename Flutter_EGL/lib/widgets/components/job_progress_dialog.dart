@@ -22,6 +22,7 @@ Future<void> showJobProgressOverlayDialog({
   double? percent;
   String message = 'Starting...';
   String countsText = '';
+  bool cancelling = false;
   StreamSubscription? sub;
   try {
     await showDialog<void>(
@@ -101,8 +102,9 @@ Future<void> showJobProgressOverlayDialog({
                 final norm01 = (effective / 100.0);
                 try { await windowManager.setProgressBar(norm01); } catch (_) {}
               }
-              // Auto-close when we clearly reach 100% or receive a done phase
-              if ((effective != null && effective >= 100.0) || ev.phase.toLowerCase() == 'done' || ev.phase.toLowerCase() == 'completed') {
+              // Auto-close when we clearly reach 100% or receive a done/cancel phase
+              final ph = ev.phase.toLowerCase();
+              if ((effective != null && effective >= 100.0) || ph == 'done' || ph == 'completed' || ph == 'cancel' || ph == 'cancelled') {
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
                 if (Navigator.of(ctx).canPop()) {
                   Navigator.of(ctx).pop();
@@ -135,6 +137,18 @@ Future<void> showJobProgressOverlayDialog({
                   ],
                 ),
               ),
+              actions: [
+                TextButton.icon(
+                  onPressed: cancelling ? null : () async {
+                    setStateSB(() { cancelling = true; message = 'Cancelling…'; });
+                    try { await api.cancelJob(jobId); } catch (_) {}
+                    try { await windowManager.setProgressBar(-1); } catch (_) {}
+                    if (Navigator.of(ctx).canPop()) { Navigator.of(ctx).pop(); }
+                  },
+                  icon: const Icon(Icons.cancel),
+                  label: Text(cancelling ? 'Cancelling…' : 'Cancel'),
+                ),
+              ],
             );
           },
         );

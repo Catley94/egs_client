@@ -231,6 +231,13 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
     utils::emit_event(job_id.as_deref(), "download:start", format!("Starting download {}/{}/{}", namespace, asset_id, artifact_id), Some(0.0), None);
 
+    // If already cancelled before we start, exit early
+    if utils::is_cancelled(job_id.as_deref()) {
+        utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
+        if let Some(ref j) = job_id { utils::clear_cancel(j); }
+        return HttpResponse::Ok().body("cancelled");
+    }
+
     let mut epic = utils::create_epic_games_services();
     if !utils::try_cached_login(&mut epic).await {
         let auth_code = utils::get_auth_code();
@@ -251,6 +258,11 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
 
     for man in manifests.iter() {
         for url in man.distribution_point_base_urls.iter() {
+            if utils::is_cancelled(job_id.as_deref()) {
+                utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
+                if let Some(ref j) = job_id { utils::clear_cancel(j); }
+                return HttpResponse::Ok().body("cancelled");
+            }
             if let Ok(mut dm) = epic.fab_download_manifest(man.clone(), url).await {
                 // Ensure SourceURL present for downloader (some tooling relies on it)
                 use std::collections::HashMap;
@@ -295,7 +307,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                     });
                     f
                 });
-                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb).await {
+                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb, job_id.as_deref()).await {
                     Ok(_) => {
                         println!("Download complete");
 
@@ -303,7 +315,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                         // to mark this asset and specific version as downloaded, so the UI can
                         // reflect the state without requiring a full refresh.
                         let cache_path = utils::fab_cache_file();
-                                                if let Ok(mut f) = fs::File::open(&cache_path) {
+                        if let Ok(mut f) = fs::File::open(&cache_path) {
                             use std::io::Read as _;
                             let mut buf = Vec::new();
                             if f.read_to_end(&mut buf).is_ok() {
@@ -379,9 +391,15 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                         }
 
                         utils::emit_event(job_id.as_deref(), "download:complete", "Download complete", Some(100.0), None);
+                        if let Some(ref j) = job_id { utils::clear_cancel(j); }
                         return HttpResponse::Ok().body("Download complete")
                     },
                     Err(e) => {
+                        if utils::is_cancelled(job_id.as_deref()) {
+                            utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
+                            if let Some(ref j) = job_id { utils::clear_cancel(j); }
+                            return HttpResponse::Ok().body("cancelled");
+                        }
                         eprintln!("Download failed from {}: {:?}", url, e);
                         continue;
                     }
@@ -391,7 +409,7 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
     }
 
     utils::emit_event(job_id.as_deref(), "download:error", "Unable to download asset from any distribution point", None, None);
-        HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
+    HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
 }
 
 /// Lists Unreal Engine projects under a base directory by detecting folders containing a .uproject file.
@@ -1366,4 +1384,16 @@ pub async fn set_paths_config(body: web::Json<models::PathsUpdate>) -> HttpRespo
         effective_downloads_dir: utils::default_downloads_dir().to_string_lossy().to_string(),
     };
     HttpResponse::Ok().json(status)
+}
+
+
+#[post("/cancel-job")]
+pub async fn cancel_job_endpoint(query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
+    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
+    if let Some(jid) = job_id {
+        utils::cancel_job(&jid);
+        utils::emit_event(Some(&jid), "cancelled", "Job cancelled", None, None);
+        return HttpResponse::Ok().json(serde_json::json!({"ok": true, "message": "cancelled"}));
+    }
+    HttpResponse::BadRequest().body("missing jobId")
 }

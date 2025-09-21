@@ -286,12 +286,16 @@ Future<void> showFabAssetOverlayDialog({
                                       }
                                       await dlg.catchError((_ ){});
                                       if (!context.mounted) return;
+                                      final msg = res.message.isNotEmpty ? res.message : 'Download started';
+                                      final wasCancelled = msg.toLowerCase().contains('cancel');
                                       ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text(res.message.isNotEmpty ? res.message : 'Download started')),
+                                        SnackBar(content: Text(msg)),
                                       );
-                                      // Mark as downloaded locally and request a list refresh
-                                      setStateSB(() => downloadedNow = true);
-                                      onFabListChanged?.call();
+                                      if (!wasCancelled) {
+                                        // Mark as downloaded locally and request a list refresh
+                                        setStateSB(() => downloadedNow = true);
+                                        onFabListChanged?.call();
+                                      }
                                     } catch (e) {
                                       if (!context.mounted) return;
                                       ScaffoldMessenger.of(context).showSnackBar(

@@ -23,6 +23,15 @@ class AuthStart {
 const String kEpicLoginUrl = 'https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode';
 
 class ApiService {
+  
+  Future<bool> cancelJob(String jobId) async {
+    final uri = _uri('/cancel-job', {'jobId': jobId});
+    try {
+      final res = await http.post(uri);
+      if (res.statusCode == 200) return true;
+    } catch (_) {}
+    return false;
+  }
   ApiService({String? baseUrl}) : baseUrl = baseUrl ?? defaultBaseUrl;
 
   static const String defaultBaseUrl = 'http://127.0.0.1:8080';

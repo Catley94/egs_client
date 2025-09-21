@@ -188,7 +188,7 @@ pub async fn get_fab_library_items(epic_games_services: &mut EpicGames, info: Ac
 /// when no files could be downloaded and none were up-to-date.
 pub type ProgressFn = std::sync::Arc<dyn Fn(u32, String) + Send + Sync + 'static>;
 
-pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path, progress: Option<ProgressFn>) -> Result<(), anyhow::Error> {
+pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path, progress: Option<ProgressFn>, job_id_opt: Option<&str>) -> Result<(), anyhow::Error> {
     use egs_api::api::types::chunk::Chunk;
     use sha1::{Digest, Sha1};
     use std::io::{self, Write};
@@ -212,6 +212,12 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
         return Err(anyhow::anyhow!("download manifest contains no files"));
     }
 
+    // Early cancellation
+    if is_cancelled(job_id_opt) {
+        emit_event(job_id_opt, "cancelled", "Cancelled", None, None);
+        return Err(anyhow::anyhow!("cancelled"));
+    }
+
     // Setup file-level concurrency
     let file_sema = Arc::new(Semaphore::new(max_files));
     let mut join = JoinSet::new();
@@ -220,10 +226,17 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     struct Totals { downloaded: usize, skipped_zero: usize, up_to_date: usize }
     let totals = Arc::new(tokio::sync::Mutex::new(Totals::default()));
 
-        // Track completed files across concurrent tasks to compute overall percent
-        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Track completed files across concurrent tasks to compute overall percent
+    let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Capture job id for async blocks
+    let job_id_owned = job_id_opt.map(|s| s.to_string());
 
     for (file_idx, (filename, file)) in files.into_iter().enumerate() {
+        if is_cancelled(job_id_opt) {
+            emit_event(job_id_opt, "cancelled", "Cancelled", None, None);
+            return Err(anyhow::anyhow!("cancelled"));
+        }
         let permit_owner = file_sema.clone().acquire_owned().await.expect("semaphore closed");
         let client = client.clone();
         let temp_dir = temp_dir.clone();
@@ -231,6 +244,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
         let totals = totals.clone();
         let completed = completed.clone();
         let progress = progress.clone();
+        let job_id_owned = job_id_owned.clone();
         join.spawn(async move {
             let _permit = permit_owner; // hold until task end
             let file_no = file_idx + 1;
@@ -285,13 +299,23 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
             let mut chunk_join = JoinSet::new();
 
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
+                // Early cancel before starting a chunk
+                if utils::is_cancelled(job_id_owned.as_deref()) {
+                    utils::emit_event(job_id_owned.as_deref(), "cancelled", "Cancelled", None, None);
+                    break;
+                }
                 let guid = part.guid.clone();
                 let link = part.link.clone();
                 let client = client.clone();
                 let temp_dir = temp_dir.clone();
+                let job_id_inner = job_id_owned.clone();
                 let chunk_permit_owner = chunk_sema.clone().acquire_owned().await.expect("chunk sema closed");
                 chunk_join.spawn(async move {
                     let _p = chunk_permit_owner; // hold permit until end
+                    // Cancelled? bail
+                    if utils::is_cancelled(job_id_inner.as_deref()) {
+                        return Err(anyhow::anyhow!("cancelled"));
+                    }
                     let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                     if chunk_path.exists() {
                         print!("\r  chunks: {}/{} ({}%) - using cached chunk    ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
@@ -302,20 +326,44 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                     io::stdout().flush().ok();
                     let link = link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
                     let url = link.to_string();
+                    // Check cancel right before sending
+                    if utils::is_cancelled(job_id_inner.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
                     let mut resp = client.get(url.clone()).send().await;
                     if resp.is_err() { resp = client.get(url.clone()).send().await; }
                     let resp = resp.map_err(|e| anyhow::anyhow!("chunk request failed for {}: {}", guid, e))?;
                     let resp = resp.error_for_status().map_err(|e| anyhow::anyhow!("chunk HTTP {} for {}", e.status().unwrap_or_default(), guid))?;
-                    let bytes = resp.bytes().await.map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
+                    // Check cancel before reading body
+                    if utils::is_cancelled(job_id_inner.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
+                    use futures_util::StreamExt;
                     if let Some(parent) = chunk_path.parent() { let _ = std::fs::create_dir_all(parent); }
-                    std::fs::write(&chunk_path, &bytes)?;
+                    let mut f = std::fs::File::create(&chunk_path)?;
+                    let mut stream = resp.bytes_stream();
+                    while let Some(next) = stream.next().await {
+                        if utils::is_cancelled(job_id_inner.as_deref()) {
+                            // Leave partial chunk; future runs may reuse/overwrite
+                            return Err(anyhow::anyhow!("cancelled"));
+                        }
+                        let bytes = next.map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
+                        std::io::Write::write_all(&mut f, &bytes)?;
+                    }
                     Ok(())
                 });
             }
 
-            // Wait all chunks
-            while let Some(res) = chunk_join.join_next().await { res??; }
+            // Wait all chunks; abort early on cancel
+            while let Some(res) = chunk_join.join_next().await {
+                if let Err(e) = res { return Err(e.into()); }
+                // If a task returned Err(cancelled), propagate
+                if utils::is_cancelled(job_id_owned.as_deref()) {
+                    return Err(anyhow::anyhow!("cancelled"));
+                }
+            }
             println!("\r  chunks: {}/{} (100%) - done                    ", total_chunks, total_chunks);
+
+            // Cancel before assembling
+            if utils::is_cancelled(job_id_owned.as_deref()) {
+                return Err(anyhow::anyhow!("cancelled"));
+            }
 
             // Assemble
             let mut out = std::fs::File::create(&tmp_out_path)?;
@@ -323,6 +371,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
             let total_bytes: u128 = file.file_chunk_parts.iter().map(|p| p.size as u128).sum();
             let mut written: u64 = 0;
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
+                if utils::is_cancelled(job_id_owned.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
                 let guid = &part.guid;
                 let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                 let chunk_bytes = std::fs::read(&chunk_path)?;
@@ -359,7 +408,12 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     }
 
     // Await all file tasks
-    while let Some(res) = join.join_next().await { res??; }
+    while let Some(res) = join.join_next().await {
+        if let Err(e) = res { return Err(e.into()); }
+        if is_cancelled(job_id_opt) {
+            return Err(anyhow::anyhow!("cancelled"));
+        }
+    }
 
     let t = totals.lock().await;
     let downloaded_files = t.downloaded;
@@ -668,6 +722,10 @@ pub fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool,
     let mut last_percent: u32 = 0;
     emit_event(job_id_opt, phase, "Starting...", Some(0.0), None);
     for entry in WalkDir::new(src).follow_links(false) {
+        if is_cancelled(job_id_opt) {
+            emit_event(job_id_opt, phase, "Cancelled", None, None);
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled by user"));
+        }
         let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         let path = entry.path();
         let rel = path.strip_prefix(src).unwrap();
@@ -775,7 +833,7 @@ pub async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&st
                     });
                     f
                 });
-                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb).await {
+                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb, job_id_opt).await {
                     Ok(_) => { return Ok(out_root); },
                     Err(e) => { eprintln!("Download failed from {}: {:?}", url, e); continue; }
                 }
@@ -793,6 +851,13 @@ pub async fn ensure_asset_downloaded_by_name(title: &str, job_id_opt: Option<&st
 
 static JOB_BUS: OnceLock<DashMap<String, broadcast::Sender<String>>> = OnceLock::new();
 static JOB_BUFFER: OnceLock<DashMap<String, VecDeque<String>>> = OnceLock::new();
+
+// Cooperative job cancellation registry
+static CANCEL_MAP: OnceLock<DashMap<String, bool>> = OnceLock::new();
+fn cancel_map() -> &'static DashMap<String, bool> { CANCEL_MAP.get_or_init(|| DashMap::new()) }
+pub fn cancel_job(job_id: &str) { cancel_map().insert(job_id.to_string(), true); emit_event(Some(job_id), "cancel", "Cancellation requested", None, None); }
+pub fn clear_cancel(job_id: &str) { let _ = cancel_map().remove(job_id); }
+pub fn is_cancelled(job_id_opt: Option<&str>) -> bool { if let Some(j) = job_id_opt { cancel_map().get(j).is_some() } else { false } }
 
 pub fn bus() -> &'static DashMap<String, broadcast::Sender<String>> {
     JOB_BUS.get_or_init(|| DashMap::new())
@@ -884,6 +949,9 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
             Ok(ws::Message::Text(_)) => { /* ignore client messages */ },
             Ok(ws::Message::Close(_)) => {
                 println!("[WS] client requested close for job {}", self.job_id);
+                // Treat WebSocket close as a cancellation request for this job so
+                // long-running tasks can stop cooperatively.
+                cancel_job(&self.job_id);
                 ctx.stop();
             },
             _ => {}
