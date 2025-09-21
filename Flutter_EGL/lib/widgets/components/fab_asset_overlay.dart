@@ -322,7 +322,9 @@ Future<void> showFabAssetOverlayDialog({
                             onPressed: working ? null : () async {
                               setStateSB(() => working = true);
                               try {
-                                final url = 'https://www.fab.com/listings/${a.assetNamespace}/${a.assetId}';
+                                final url = (a.url != null && a.url!.isNotEmpty)
+                                    ? a.url!
+                                    : 'https://www.fab.com/listings/${a.assetId}';
                                 await launchExternal(url);
                               } finally {
                                 setStateSB(() => working = false);
