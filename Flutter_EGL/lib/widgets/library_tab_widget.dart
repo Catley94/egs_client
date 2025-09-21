@@ -2,7 +2,9 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math';
+import 'components/unreal_engine_versions_list_widget.dart';
 import 'fab_library_item.dart';
+import 'components/project_tile.dart';
 import '../services/api_service.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
@@ -13,6 +15,7 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/image_cache.dart';
+import './components/unreal_engine_header.dart';
 
 class LibraryTab extends StatefulWidget {
   const LibraryTab({super.key});
@@ -480,86 +483,90 @@ class _LibraryTabState extends State<LibraryTab> {
 
             // Engine Versions grid (new)
             const Divider(height: 24),
-            Text(
-              'Engine Versions',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-            ),
+            UnrealEngineHeader("Engine Versions"),
             const SizedBox(height: 10),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                const tileMinWidth = 95.0;
-                const spacing = 8.0;
-                final count = (constraints.maxWidth / (tileMinWidth + spacing))
-                    .floor()
-                    .clamp(1, 8);
-                return FutureBuilder<List<UnrealEngineInfo>>(
-                  future: _enginesFuture,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
-                    }
-                    if (snapshot.hasError) {
-                      return Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Text('Failed to load engines: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent)),
-                      );
-                    }
-                    final engines = snapshot.data ?? const <UnrealEngineInfo>[];
-                    if (engines.isEmpty) {
-                      return const Padding(
-                        padding: EdgeInsets.all(8.0),
-                        child: Text('No engines found'),
-                      );
-                    }
-                    return GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: engines.length,
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: count,
-                        mainAxisSpacing: spacing,
-                        crossAxisSpacing: spacing,
-                        childAspectRatio: 0.78,
-                      ),
-                      itemBuilder: (context, index) {
-                        final e = engines[index];
-                        return _ProjectTile(
-                          name: e.name,
-                          version: e.version.isEmpty ? 'unknown' : 'UE ${e.version}',
-                          color: AppPalette.varied(AppPalette.engineTileBase, index, cycle: 5, t: 0.2),
-                          onTap: () async {
-                            if (_opening) return;
-                            if (e.version.isEmpty) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Cannot open Unreal Engine: version is unknown')),
-                              );
-                              return;
-                            }
-                            setState(() => _opening = true);
-                            try {
-                              final result = await _api.openUnrealEngine(version: e.version);
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text(result.message.isNotEmpty ? result.message : (result.launched ? 'Launched Unreal Engine' : 'Failed to launch Unreal Engine'))),
-                              );
-                            } catch (err) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Error opening Unreal Engine: $err')),
-                              );
-                            } finally {
-                              if (mounted) setState(() => _opening = false);
-                            }
-                          },
-                        );
-                      },
-                    );
-                  },
-                );
+            // LayoutBuilder(
+            //   builder: (context, constraints) {
+            //     const tileMinWidth = 95.0;
+            //     const spacing = 8.0;
+            //     final count = (constraints.maxWidth / (tileMinWidth + spacing))
+            //         .floor()
+            //         .clamp(1, 8);
+            //     return FutureBuilder<List<UnrealEngineInfo>>(
+            //       future: _enginesFuture,
+            //       builder: (context, snapshot) {
+            //         if (snapshot.connectionState == ConnectionState.waiting) {
+            //           return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
+            //         }
+            //         if (snapshot.hasError) {
+            //           return Padding(
+            //             padding: const EdgeInsets.all(8.0),
+            //             child: Text('Failed to load engines: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent)),
+            //           );
+            //         }
+            //         final engines = snapshot.data ?? const <UnrealEngineInfo>[];
+            //         if (engines.isEmpty) {
+            //           return const Padding(
+            //             padding: EdgeInsets.all(8.0),
+            //             child: Text('No engines found'),
+            //           );
+            //         }
+            //         return GridView.builder(
+            //           shrinkWrap: true,
+            //           physics: const NeverScrollableScrollPhysics(),
+            //           itemCount: engines.length,
+            //           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            //             crossAxisCount: count,
+            //             mainAxisSpacing: spacing,
+            //             crossAxisSpacing: spacing,
+            //             childAspectRatio: 0.78,
+            //           ),
+            //           itemBuilder: (context, index) {
+            //             final e = engines[index];
+            //             return ProjectTile(
+            //               name: e.name,
+            //               version: e.version.isEmpty ? 'unknown' : 'UE ${e.version}',
+            //               color: AppPalette.varied(AppPalette.engineTileBase, index, cycle: 5, t: 0.2),
+            //               onTap: () async {
+            //                 if (_opening) return;
+            //                 if (e.version.isEmpty) {
+            //                   ScaffoldMessenger.of(context).showSnackBar(
+            //                     const SnackBar(content: Text('Cannot open Unreal Engine: version is unknown')),
+            //                   );
+            //                   return;
+            //                 }
+            //                 setState(() => _opening = true);
+            //                 try {
+            //                   final result = await _api.openUnrealEngine(version: e.version);
+            //                   if (!mounted) return;
+            //                   ScaffoldMessenger.of(context).showSnackBar(
+            //                     SnackBar(content: Text(result.message.isNotEmpty ? result.message : (result.launched ? 'Launched Unreal Engine' : 'Failed to launch Unreal Engine'))),
+            //                   );
+            //                 } catch (err) {
+            //                   if (!mounted) return;
+            //                   ScaffoldMessenger.of(context).showSnackBar(
+            //                     SnackBar(content: Text('Error opening Unreal Engine: $err')),
+            //                   );
+            //                 } finally {
+            //                   if (mounted) setState(() => _opening = false);
+            //                 }
+            //               },
+            //             );
+            //           },
+            //         );
+            //       },
+            //     );
+            //   },
+            // ),
+            UnrealEngineVersionsList<UnrealEngineInfo>(
+              enginesFuture: _enginesFuture,
+              nameOf: (e) => e.name,
+              versionOf: (e) => e.version,
+              openEngine: (version) async {
+                final r = await _api.openUnrealEngine(version: version);
+                return (launched: r.launched, message: r.message);
               },
+              tileColorBuilder: (i) => AppPalette.varied(AppPalette.engineTileBase, i, cycle: 5, t: 0.2),
             ),
             const SizedBox(height: 24),
             // My Projects grid (kept)
@@ -610,7 +617,7 @@ class _LibraryTabState extends State<LibraryTab> {
                       ),
                       itemBuilder: (context, index) {
                         final p = projects[index];
-                        return _ProjectTile(
+                        return ProjectTile(
                           name: p.name.isEmpty ? p.uprojectFile.split('/').last : p.name,
                           version: p.engineVersion.isNotEmpty ? 'UE ${p.engineVersion}' : 'UE unknown',
                           color: AppPalette.varied(AppPalette.projectTileBase, index, cycle: 5, t: 0.25),
@@ -1983,141 +1990,4 @@ class _FabAssetsGridState extends State<_FabAssetsGrid> {
 }
 
 // ... existing code ...
-class _ProjectTile extends StatelessWidget {
-  final String name;
-  final String version;
-  final Color color;
-  final VoidCallback? onTap;
-
-  const _ProjectTile({
-    required this.name,
-    required this.version,
-    required this.color,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final bgStart = Color.lerp(color, Colors.black, 0.20)!;
-    final bgEnd = Color.lerp(color, Colors.white, 0.06)!;
-
-    Widget unrealBadge({double size = 36, double opacity = 0.10}) {
-      return Opacity(
-        opacity: opacity,
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white.withOpacity(0.04),
-            border: Border.all(color: Colors.white.withOpacity(0.15), width: 1.0),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            'U',
-            style: TextStyle(
-              fontSize: size * 0.6,
-              fontWeight: FontWeight.w800,
-              color: Colors.white.withOpacity(0.8),
-              height: 1.0,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Square thumbnail with Unreal watermark and version chip
-        AspectRatio(
-          aspectRatio: 1,
-          child: Stack(
-            children: [
-              // Gradient background instead of flat blue
-              Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: cs.outlineVariant),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [bgStart, bgEnd],
-                  ),
-                ),
-              ),
-              // Subtle corner glow to add depth
-              Positioned(
-                left: -30,
-                top: -30,
-                child: Container(
-                  width: 120,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: color.withOpacity(0.10),
-                  ),
-                ),
-              ),
-              // Centered Unreal badge watermark
-              Center(child: unrealBadge(size: 56, opacity: 0.18)),
-
-              // Version chip with small Unreal badge
-              Positioned(
-                right: 8,
-                bottom: 8,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: cs.surface.withOpacity(0.85),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: cs.outlineVariant.withOpacity(0.5)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Tiny badge
-                      Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: unrealBadge(size: 16, opacity: 1.0),
-                      ),
-                      Text(
-                        version,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ) ?? const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              // Full-surface tappable overlay with ripple
-              Positioned.fill(
-                child: Material(
-                  color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: onTap,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-      ],
-    );
-  }
-}
 
