@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
 use actix_web::{get, web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
@@ -194,6 +195,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     use std::io::{self, Write};
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
+    use std::time::{Instant, Duration};
 
     // Concurrency controls (sane defaults; can be tuned via env)
     let max_files: usize = std::env::var("EAM_FILE_CONCURRENCY").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(2);
@@ -215,6 +217,12 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     if total_files == 0 {
         return Err(anyhow::anyhow!("download manifest contains no files"));
     }
+
+    // Precompute total bytes across all files and a shared bytes_done counter for live speed
+    let total_bytes_all: u64 = files.iter()
+        .map(|(_, f)| f.file_chunk_parts.iter().map(|p| p.size as u64).sum::<u64>())
+        .sum();
+    let bytes_done = Arc::new(AtomicU64::new(0));
 
     // Early cancellation
     if is_cancelled(job_id_opt) {
@@ -249,11 +257,15 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
         let completed = completed.clone();
         let progress = progress.clone();
         let job_id_owned = job_id_owned.clone();
+        let bytes_done = bytes_done.clone();
+        let total_bytes_all = total_bytes_all;
         join.spawn(async move {
             let _permit = permit_owner; // hold until task end
             let file_no = file_idx + 1;
             println!("Downloading file {}/{}: {}", file_no, total_files, filename);
             io::stdout().flush().ok();
+            // Total bytes for this file (sum of chunk parts)
+            let file_total_bytes: u64 = file.file_chunk_parts.iter().map(|p| p.size as u64).sum();
 
             // Prepare final output path under .../data/<filename>
             let mut out_path = out_root.clone();
@@ -280,6 +292,8 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                 }
             }
             if skip_existing {
+                // Count these bytes toward total progress
+                let _ = bytes_done.fetch_add(file_total_bytes, Ordering::SeqCst);
                 let mut t = totals.lock().await; t.up_to_date += 1;
                 // Count as completed for overall percent and notify progress
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -314,6 +328,8 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                 let temp_dir = temp_dir.clone();
                 let job_id_inner = job_id_owned.clone();
                 let chunk_permit_owner = chunk_sema.clone().acquire_owned().await.expect("chunk sema closed");
+                let completed = completed.clone();
+                let bytes_done = bytes_done.clone();
                 chunk_join.spawn(async move {
                     let _p = chunk_permit_owner; // hold permit until end
                     // Cancelled? bail
@@ -342,6 +358,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                     if let Some(parent) = chunk_path.parent() { let _ = std::fs::create_dir_all(parent); }
                     let mut f = std::fs::File::create(&chunk_path)?;
                     let mut stream = resp.bytes_stream();
+                    let mut last_emit = Instant::now();
                     while let Some(next) = stream.next().await {
                         if utils::is_cancelled(job_id_inner.as_deref()) {
                             // Leave partial chunk; future runs may reuse/overwrite
@@ -349,6 +366,25 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                         }
                         let bytes = next.map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
                         std::io::Write::write_all(&mut f, &bytes)?;
+                        // Update global bytes_done and emit throttled progress for live speed in UI
+                        let cur = bytes_done.fetch_add(bytes.len() as u64, Ordering::SeqCst) + (bytes.len() as u64);
+                        if last_emit.elapsed() >= Duration::from_millis(300) {
+                            let done_files = completed.load(std::sync::atomic::Ordering::SeqCst);
+                            let pct = if total_bytes_all > 0 { ((cur as f64) / (total_bytes_all as f64) * 100.0) as f32 } else { 0.0 };
+                            utils::emit_event(
+                                job_id_inner.as_deref(),
+                                "download:progress",
+                                format!("{} / {}", done_files, total_files),
+                                Some(pct),
+                                Some(serde_json::json!({
+                                    "downloaded_files": done_files,
+                                    "total_files": total_files,
+                                    "bytes_done": cur,
+                                    "total_bytes": total_bytes_all,
+                                })),
+                            );
+                            last_emit = Instant::now();
+                        }
                     }
                     Ok(())
                 });
@@ -379,11 +415,19 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                 let guid = &part.guid;
                 let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                 let chunk_bytes = std::fs::read(&chunk_path)?;
-                let chunk = Chunk::from_vec(chunk_bytes).ok_or_else(|| anyhow::anyhow!("failed to parse chunk {}", guid))?;
+                // Some distribution links (e.g., certain FAB endpoints) may return raw byte blobs rather than
+                // Epic chunk container files. Try to parse as a chunk first; if that fails, fall back to raw bytes.
+                let (data, data_len): (std::borrow::Cow<[u8]>, usize) = if let Some(chunk) = Chunk::from_vec(chunk_bytes.clone()) {
+                    let len = chunk.data.len();
+                    (std::borrow::Cow::Owned(chunk.data), len)
+                } else {
+                    let len = chunk_path.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                    (std::borrow::Cow::Owned(chunk_bytes), len)
+                };
                 let start = part.offset as usize;
                 let end = (part.offset + part.size) as usize;
-                if end > chunk.data.len() { return Err(anyhow::anyhow!("chunk too small for {} [{}..{} > {}]", filename, start, end, chunk.data.len())); }
-                let slice = &chunk.data[start..end];
+                if end > data_len { return Err(anyhow::anyhow!("chunk/raw too small for {} [{}..{} > {}]", filename, start, end, data_len)); }
+                let slice = &data[start..end];
                 std::io::Write::write_all(&mut out, slice)?;
                 hasher.update(slice);
                 written += part.size as u64;

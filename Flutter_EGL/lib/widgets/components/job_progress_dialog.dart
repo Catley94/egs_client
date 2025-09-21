@@ -22,8 +22,31 @@ Future<void> showJobProgressOverlayDialog({
   double? percent;
   String message = 'Starting...';
   String countsText = '';
+  String speedText = '';
   bool cancelling = false;
   StreamSubscription? sub;
+
+  // Track if an error occurred to redirect user after closing dialog
+  bool hadError = false;
+  String? errorMessage;
+
+  // For computing speed when backend provides byte counters
+  int? _lastBytes;
+  DateTime? _lastTs;
+  double? _speedBps; // bytes per second (smoothed)
+  final List<Map<String, dynamic>> _hist = <Map<String, dynamic>>[]; // [{t: DateTime, b: int}]
+
+  String _fmtSpeed(double bps) {
+    if (bps.isNaN || !bps.isFinite) return '';
+    const kb = 1024.0;
+    const mb = kb * 1024.0;
+    const gb = mb * 1024.0;
+    if (bps >= gb) return (bps / gb).toStringAsFixed(2) + ' GB/s';
+    if (bps >= mb) return (bps / mb).toStringAsFixed(2) + ' MB/s';
+    if (bps >= kb) return (bps / kb).toStringAsFixed(1) + ' KB/s';
+    return bps.toStringAsFixed(0) + ' B/s';
+  }
+
   try {
     await showDialog<void>(
       context: context,
@@ -54,6 +77,12 @@ Future<void> showJobProgressOverlayDialog({
               int? filesDone;
               int? filesTotal;
               final d = ev.details;
+
+              // Attempt to extract byte counters and/or speed from details
+              int? bytesDone;
+              int? bytesTotal;
+              double? speedBps;
+
               if (d != null) {
                 dynamic pick(List<String> keys) {
                   for (final k in keys) {
@@ -68,8 +97,58 @@ Future<void> showJobProgressOverlayDialog({
                   if (v is String) return int.tryParse(v);
                   return null;
                 }
+                double? toDouble(dynamic v) {
+                  if (v == null) return null;
+                  if (v is num) return v.toDouble();
+                  if (v is String) return double.tryParse(v);
+                  return null;
+                }
                 filesDone = toInt(pick(['downloaded_files', 'files_done', 'completed', 'current']));
                 filesTotal = toInt(pick(['total_files', 'files_total', 'total']));
+
+                bytesDone = toInt(pick(['bytes_done', 'downloaded_bytes', 'bytes_downloaded', 'current_bytes']));
+                bytesTotal = toInt(pick(['bytes_total', 'total_bytes', 'total_size']));
+                // Prefer explicit speed if present
+                speedBps = toDouble(pick(['bytes_per_sec', 'bps', 'speed_bps', 'speed']));
+              }
+
+              // Compute speed from deltas when byte counters available; then smooth using a short moving average window
+              if (bytesDone != null) {
+                final now = DateTime.now();
+                if (_lastBytes != null && _lastTs != null) {
+                  final dtMs = now.difference(_lastTs!).inMilliseconds;
+                  if (dtMs > 0) {
+                    final db = bytesDone - _lastBytes!;
+                    if (db >= 0) {
+                      final inst = (db * 1000) / dtMs; // instantaneous bytes per second
+                      if (speedBps == null) {
+                        speedBps = inst;
+                      }
+                    }
+                  }
+                }
+                _lastBytes = bytesDone;
+                _lastTs = now;
+
+                // Update history and compute moving average over the last ~5 seconds
+                // Keep samples compact to avoid growth; prune old entries by time window
+                const int windowMs = 5000;
+                _hist.add({'t': now, 'b': bytesDone});
+                // Prune by time
+                while (_hist.isNotEmpty && now.difference(_hist.first['t'] as DateTime).inMilliseconds > windowMs) {
+                  _hist.removeAt(0);
+                }
+                if (_hist.length >= 2) {
+                  final DateTime t0 = _hist.first['t'] as DateTime;
+                  final int b0 = _hist.first['b'] as int;
+                  final DateTime t1 = _hist.last['t'] as DateTime;
+                  final int b1 = _hist.last['b'] as int;
+                  final int dt = t1.difference(t0).inMilliseconds;
+                  if (dt > 250 && b1 >= b0) {
+                    final avg = ((b1 - b0) * 1000) / dt; // bytes per second across window
+                    speedBps = avg;
+                  }
+                }
               }
 
               // Fallback/override: derive progress from messages like "123 / 5851"
@@ -96,14 +175,32 @@ Future<void> showJobProgressOverlayDialog({
                 print("ev message: " + ev.message);
                 print("ev phase: " + ev.phase);
                 countsText = (filesDone != null && filesTotal != null) ? '${filesDone} / ${filesTotal} files' : '';
+                _speedBps = speedBps ?? _speedBps; // keep last known if null
+                // Only show speed during download-like phases and when known
+                final isDownloading = ev.phase.toLowerCase().contains('download');
+                speedText = (isDownloading && _speedBps != null && _speedBps! > 0)
+                    ? _fmtSpeed(_speedBps!)
+                    : '';
               });
               // Update OS-level window/taskbar progress if available
               if (effective != null) {
                 final norm01 = (effective / 100.0);
                 try { await windowManager.setProgressBar(norm01); } catch (_) {}
               }
-              // Auto-close when we clearly reach 100% or receive a done/cancel phase
+              // Auto-close on error or when we clearly reach 100% or receive a done/cancel phase
               final ph = ev.phase.toLowerCase();
+              final msgLower = ev.message.toLowerCase();
+              final isErrorPhase = ph.contains('error') || ph.contains('fail');
+              final isExplicitDownloadError = msgLower.contains('unable to download asset');
+              if (isErrorPhase || isExplicitDownloadError) {
+                hadError = true;
+                errorMessage = ev.message.isNotEmpty ? ev.message : 'An error occurred';
+                try { await windowManager.setProgressBar(-1); } catch (_) {}
+                if (Navigator.of(ctx).canPop()) {
+                  Navigator.of(ctx).pop();
+                }
+                return; // stop handling further for this event
+              }
               if ((effective != null && effective >= 100.0) || ph == 'done' || ph == 'completed' || ph == 'cancel' || ph == 'cancelled') {
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
                 if (Navigator.of(ctx).canPop()) {
@@ -129,6 +226,10 @@ Future<void> showJobProgressOverlayDialog({
                           const SizedBox(width: 12),
                           Expanded(child: Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
                           // Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                        ],
+                        if (speedText.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          Text(speedText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                         ],
                         const SizedBox(width: 8),
                         if (percent != null) Text('${p.floor().toString()}%'),
@@ -157,5 +258,17 @@ Future<void> showJobProgressOverlayDialog({
   } finally {
     await sub?.cancel();
     try { await windowManager.setProgressBar(-1); } catch (_) {}
+    // If an error occurred, inform the user and navigate back to main screen
+    if (hadError) {
+      try {
+        final msg = (errorMessage == null || errorMessage!.isEmpty) ? 'An error occurred during the operation.' : errorMessage!;
+        // Prefer SnackBar if a Scaffold is available; otherwise, show a dialog
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: Colors.redAccent),
+        );
+        // Pop to the first route (main screen)
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      } catch (_) {}
+    }
   }
 }

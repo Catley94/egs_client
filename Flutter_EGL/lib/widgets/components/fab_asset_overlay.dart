@@ -271,7 +271,39 @@ Future<void> showFabAssetOverlayDialog({
                                         );
                                         return;
                                       }
-                                      final artifactId = a.projectVersions.first.artifactId;
+                                      // Pick the most suitable artifact/version:
+                                      // Prefer the variant that supports the highest Unreal Engine major.minor (e.g., 5.6)
+                                      String? pickBestArtifactId(FabAsset asset) {
+                                        int scoreMm(String mm) {
+                                          final parts = mm.split('.');
+                                          final maj = int.tryParse(parts.isNotEmpty ? parts[0] : '0') ?? 0;
+                                          final min = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+                                          return maj * 100 + min;
+                                        }
+                                        String? bestArtifact;
+                                        int bestScore = -1;
+                                        for (final pv in asset.projectVersions) {
+                                          // Determine this version's highest supported engine mm
+                                          int pvBest = -1;
+                                          for (final ev in pv.engineVersions) {
+                                            // ev looks like 'UE_5.6' or 'UE_4.27'
+                                            final parts = ev.split('_');
+                                            if (parts.length > 1) {
+                                              final mm = parts[1];
+                                              pvBest = pvBest < 0 ? scoreMm(mm) : (pvBest > scoreMm(mm) ? pvBest : scoreMm(mm));
+                                            }
+                                          }
+                                          // If no engineVersions info, give a neutral low score but keep as fallback
+                                          if (pvBest < 0) pvBest = 0;
+                                          if (pvBest > bestScore) {
+                                            bestScore = pvBest;
+                                            bestArtifact = pv.artifactId.isNotEmpty ? pv.artifactId : bestArtifact;
+                                          }
+                                        }
+                                        return bestArtifact;
+                                      }
+
+                                      final artifactId = pickBestArtifactId(a) ?? (a.projectVersions.isNotEmpty ? a.projectVersions.last.artifactId : '');
                                       if (artifactId.isEmpty) {
                                         ScaffoldMessenger.of(context).showSnackBar(
                                           const SnackBar(content: Text('No artifact ID found for this asset')),
