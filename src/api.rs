@@ -396,6 +396,10 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                     },
                     Err(e) => {
                         if utils::is_cancelled(job_id.as_deref()) {
+                            // Remove the incomplete asset folder so partial files are not left behind
+                            if let Err(err) = fs::remove_dir_all(&out_root) {
+                                eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", out_root.display(), err);
+                            }
                             utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
                             if let Some(ref j) = job_id { utils::clear_cancel(j); }
                             return HttpResponse::Ok().body("cancelled");
