@@ -58,6 +58,9 @@ class NavigationRailExampleApp extends StatelessWidget {
             return Stack(
               children: [
                 child,
+                // Global top-edge drag overlay to move the native window even when overlays are shown.
+                if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+                  const _TopEdgeWindowDragOverlay(),
                 if (kDebugMode)
                   Positioned(
                     left: 0,
@@ -78,6 +81,62 @@ class NavigationRailExampleApp extends StatelessWidget {
           home: const NavRailExample(),
         );
       },
+    );
+  }
+}
+
+class _TopEdgeWindowDragOverlay extends StatelessWidget {
+  const _TopEdgeWindowDragOverlay({super.key});
+
+  static const double _dragHeight = 56.0; // Top region (including app title area)
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: false, // we want to receive gestures but let others through when not dragging
+        child: _TopDragGestureRegion(height: _dragHeight),
+      ),
+    );
+  }
+}
+
+class _TopDragGestureRegion extends StatelessWidget {
+  final double height;
+  const _TopDragGestureRegion({required this.height});
+
+  bool _inDragZone(Offset pos) => pos.dy >= 0 && pos.dy <= height;
+
+  @override
+  Widget build(BuildContext context) {
+    // Use a Listener to inspect pointer positions before gestures resolve.
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (event) async {
+        // Only primary button and within top region.
+        // Primary mouse button pressed
+        if ((event.buttons & 0x01) != 0) {
+          if (_inDragZone(event.position)) {
+            try {
+              await windowManager.startDragging();
+            } catch (_) {
+              // ignore; not supported in this context
+            }
+          }
+        }
+      },
+      onPointerMove: (event) async {
+        // If user presses then moves quickly into the zone, still allow starting drag.
+        // If mouse is down and pointer is within the top zone, initiate dragging.
+        if ((event.buttons & 0x01) != 0) {
+          if (_inDragZone(event.position)) {
+            try {
+              await windowManager.startDragging();
+            } catch (_) {}
+          }
+        }
+      },
+      child: const SizedBox.expand(),
     );
   }
 }
@@ -294,7 +353,7 @@ class _WindowChromeBarState extends State<_WindowChromeBar> with WindowListener 
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'Test App UI',
+                  'Unreal Asset Manager',
                   overflow: TextOverflow.ellipsis,
                 ),
               ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../../models/fab.dart';
 import '../../services/api_service.dart';
@@ -38,7 +39,16 @@ Future<void> showFabAssetOverlayDialog({
           final cs = Theme.of(ctx).colorScheme;
           return AlertDialog(
             contentPadding: const EdgeInsets.all(12),
-            title: Text(a.title.isNotEmpty ? a.title : a.assetId),
+            title: MouseRegion(
+              cursor: SystemMouseCursors.move,
+              child: GestureDetector(
+                onPanStart: (_) {
+                  // Allow moving the native window while the overlay is open
+                  windowManager.startDragging();
+                },
+                child: Text(a.title.isNotEmpty ? a.title : a.assetId),
+              ),
+            ),
             content: Builder(
               builder: (context) {
                 final size = MediaQuery.of(context).size;
