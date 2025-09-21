@@ -1,7 +1,9 @@
 // lib/widgets/library_tab.dart (new file)
 import 'package:flutter/material.dart';
+import 'package:test_app_ui/widgets/components/my_projects_header.dart';
 import 'dart:async';
 import 'dart:math';
+import 'components/fab_library_header.dart';
 import 'components/unreal_engine_versions_list_widget.dart';
 import 'fab_library_item.dart';
 import 'components/project_tile.dart';
@@ -16,6 +18,12 @@ import 'package:window_manager/window_manager.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/image_cache.dart';
 import './components/unreal_engine_header.dart';
+import 'components/fab_auth_card.dart';
+import 'components/projects_grid_section.dart';
+import 'components/fab_search_bar.dart';
+import 'components/fab_version_filter_dropdown.dart';
+import 'components/fab_complete_projects_filter.dart';
+import 'components/fab_sort_by_dropdown.dart';
 
 class LibraryTab extends StatefulWidget {
   const LibraryTab({super.key});
@@ -28,108 +36,12 @@ enum AssetSortMode { newerUEFirst, olderUEFirst, alphaAZ, alphaZA }
 
 class _LibraryTabState extends State<LibraryTab> {
   Widget _buildUnauthenticatedCard(BuildContext context, String authUrl, String? message) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.all(24.0),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: cs.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF1A2027)),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.lock_open, size: 28),
-                    const SizedBox(width: 8),
-                    Text('Sign in required', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  message ??
-                  'To view your Fab Library, sign in to Epic Games in your web browser. After signing in, the page will show a JSON with an authorizationCode. Paste that code here to complete login.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 16),
-                // Link and code entry inline
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        FilledButton.icon(
-                          icon: const Icon(Icons.open_in_browser),
-                          label: const Text('Open Epic login in browser'),
-                          onPressed: () async {
-                            final uri = Uri.parse(authUrl);
-                            if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Failed to open browser. Copy the URL manually.')),
-                                );
-                              }
-                            }
-                          },
-                        ),
-                        const SizedBox(width: 12),
-                        TextButton.icon(
-                          onPressed: () async {
-                            final uri = Uri.parse(authUrl);
-                            await Clipboard.setData(ClipboardData(text: uri.toString()));
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Login URL copied to clipboard')),
-                              );
-                            }
-                          },
-                          icon: const Icon(Icons.copy),
-                          label: const Text('Copy URL'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    SelectableText('Login URL: ' + authUrl, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
-                    const SizedBox(height: 16),
-                    Text('Paste authorizationCode here:', style: Theme.of(context).textTheme.bodySmall),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _authCodeController,
-                            decoration: const InputDecoration(
-                              labelText: 'authorizationCode',
-                              hintText: 'Paste the code here',
-                              border: OutlineInputBorder(),
-                            ),
-                            onSubmitted: (_) async {
-                              await _submitAuthCode();
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        FilledButton.icon(
-                          onPressed: _authWorking ? null : () async { await _submitAuthCode(); },
-                          icon: _authWorking ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
-                          label: const Text('Submit'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    return FabAuthCard(
+      authUrl: authUrl,
+      message: message,
+      controller: _authCodeController,
+      onSubmit: _submitAuthCode,
+      isWorking: _authWorking,
     );
   }
 
@@ -200,7 +112,7 @@ class _LibraryTabState extends State<LibraryTab> {
   bool _onlyCompleteProjects = false;
   AssetSortMode _sortMode = AssetSortMode.newerUEFirst;
   final ScrollController _scrollController = ScrollController();
-  final GlobalKey<_FabAssetsGridState> _fabKey = GlobalKey<_FabAssetsGridState>();
+  final GlobalKey<FabAssetsListState> _fabKey = GlobalKey<FabAssetsListState>();
   late final ApiService _api;
   late Future<List<UnrealEngineInfo>> _enginesFuture;
   late Future<List<UnrealProjectInfo>> _projectsFuture;
@@ -480,84 +392,9 @@ class _LibraryTabState extends State<LibraryTab> {
                 ),
               ],
             ),
-
-            // Engine Versions grid (new)
             const Divider(height: 24),
-            UnrealEngineHeader("Engine Versions"),
+            UnrealEnginesHeader("Engine Versions"),
             const SizedBox(height: 10),
-            // LayoutBuilder(
-            //   builder: (context, constraints) {
-            //     const tileMinWidth = 95.0;
-            //     const spacing = 8.0;
-            //     final count = (constraints.maxWidth / (tileMinWidth + spacing))
-            //         .floor()
-            //         .clamp(1, 8);
-            //     return FutureBuilder<List<UnrealEngineInfo>>(
-            //       future: _enginesFuture,
-            //       builder: (context, snapshot) {
-            //         if (snapshot.connectionState == ConnectionState.waiting) {
-            //           return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
-            //         }
-            //         if (snapshot.hasError) {
-            //           return Padding(
-            //             padding: const EdgeInsets.all(8.0),
-            //             child: Text('Failed to load engines: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent)),
-            //           );
-            //         }
-            //         final engines = snapshot.data ?? const <UnrealEngineInfo>[];
-            //         if (engines.isEmpty) {
-            //           return const Padding(
-            //             padding: EdgeInsets.all(8.0),
-            //             child: Text('No engines found'),
-            //           );
-            //         }
-            //         return GridView.builder(
-            //           shrinkWrap: true,
-            //           physics: const NeverScrollableScrollPhysics(),
-            //           itemCount: engines.length,
-            //           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            //             crossAxisCount: count,
-            //             mainAxisSpacing: spacing,
-            //             crossAxisSpacing: spacing,
-            //             childAspectRatio: 0.78,
-            //           ),
-            //           itemBuilder: (context, index) {
-            //             final e = engines[index];
-            //             return ProjectTile(
-            //               name: e.name,
-            //               version: e.version.isEmpty ? 'unknown' : 'UE ${e.version}',
-            //               color: AppPalette.varied(AppPalette.engineTileBase, index, cycle: 5, t: 0.2),
-            //               onTap: () async {
-            //                 if (_opening) return;
-            //                 if (e.version.isEmpty) {
-            //                   ScaffoldMessenger.of(context).showSnackBar(
-            //                     const SnackBar(content: Text('Cannot open Unreal Engine: version is unknown')),
-            //                   );
-            //                   return;
-            //                 }
-            //                 setState(() => _opening = true);
-            //                 try {
-            //                   final result = await _api.openUnrealEngine(version: e.version);
-            //                   if (!mounted) return;
-            //                   ScaffoldMessenger.of(context).showSnackBar(
-            //                     SnackBar(content: Text(result.message.isNotEmpty ? result.message : (result.launched ? 'Launched Unreal Engine' : 'Failed to launch Unreal Engine'))),
-            //                   );
-            //                 } catch (err) {
-            //                   if (!mounted) return;
-            //                   ScaffoldMessenger.of(context).showSnackBar(
-            //                     SnackBar(content: Text('Error opening Unreal Engine: $err')),
-            //                   );
-            //                 } finally {
-            //                   if (mounted) setState(() => _opening = false);
-            //                 }
-            //               },
-            //             );
-            //           },
-            //         );
-            //       },
-            //     );
-            //   },
-            // ),
             UnrealEngineVersionsList<UnrealEngineInfo>(
               enginesFuture: _enginesFuture,
               nameOf: (e) => e.name,
@@ -569,226 +406,64 @@ class _LibraryTabState extends State<LibraryTab> {
               tileColorBuilder: (i) => AppPalette.varied(AppPalette.engineTileBase, i, cycle: 5, t: 0.2),
             ),
             const SizedBox(height: 24),
-            // My Projects grid (kept)
             const Divider(height: 24),
-            Text(
-              'My Projects',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-            ),
-            const SizedBox(height: 10),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                const tileMinWidth = 95.0;
-                const spacing = 8.0;
-                final count = (constraints.maxWidth / (tileMinWidth + spacing))
-                    .floor()
-                    .clamp(1, 8);
-                return FutureBuilder<List<UnrealProjectInfo>>(
-                  future: _projectsFuture,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
-                    }
-                    if (snapshot.hasError) {
-                      return Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Text('Failed to load projects: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent)),
-                      );
-                    }
-                    final projects = snapshot.data ?? const <UnrealProjectInfo>[];
-                    if (projects.isEmpty) {
-                      return const Padding(
-                        padding: EdgeInsets.all(8.0),
-                        child: Text('No projects found'),
-                      );
-                    }
-                    return GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: projects.length,
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: count,
-                        mainAxisSpacing: spacing,
-                        crossAxisSpacing: spacing,
-                        childAspectRatio: 0.78,
-                      ),
-                      itemBuilder: (context, index) {
-                        final p = projects[index];
-                        return ProjectTile(
-                          name: p.name.isEmpty ? p.uprojectFile.split('/').last : p.name,
-                          version: p.engineVersion.isNotEmpty ? 'UE ${p.engineVersion}' : 'UE unknown',
-                          color: AppPalette.varied(AppPalette.projectTileBase, index, cycle: 5, t: 0.25),
-                          onTap: () async {
-                            if (_opening) return;
-                            setState(() => _opening = true);
-                            try {
-                              // Choose engine: use last item from sorted list (assumed highest version)
-                              String? version;
-                              if (_engines.isNotEmpty) {
-                                version = _engines.last.version.isNotEmpty ? _engines.last.version : null;
-                              }
-                              if (version == null) {
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('No installed Unreal Engine version found')),
-                                );
-                              } else {
-                                final result = await _api.openUnrealProject(
-                                  project: p.uprojectFile.isNotEmpty ? p.uprojectFile : p.path,
-                                  version: version,
-                                );
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text(result.message.isNotEmpty ? result.message : (result.launched ? 'Launched Unreal Editor' : 'Failed to launch'))),
-                                );
-                              }
-                            } catch (e) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Error opening project: $e')),
-                              );
-                            } finally {
-                              if (mounted) setState(() => _opening = false);
-                            }
-                          },
-                        );
-                      },
-                    );
-                  },
-                );
+            ProjectsList<UnrealProjectInfo, UnrealEngineInfo>(
+              projectsFuture: _projectsFuture,
+              engines: _engines,
+              nameOf: (p) => p.name.isEmpty ? p.uprojectFile.split('/').last : p.name,
+              projectPathOf: (p) => p.uprojectFile.isNotEmpty ? p.uprojectFile : p.path,
+              engineVersionOf: (p) => p.engineVersion,
+              engineVersionOfEngine: (e) => e.version,
+              openProject: ({required String project, required String version}) async {
+                final r = await _api.openUnrealProject(project: project, version: version);
+                return (launched: r.launched, message: r.message);
               },
+              tileColorBuilder: (i) => AppPalette.varied(AppPalette.projectTileBase, i, cycle: 5, t: 0.25),
             ),
             const SizedBox(height: 24),
             // Header row for filters/actions
             const Divider(height: 24),
             Row(
               children: [
-                Text(
-                  'Fab Library',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-                ),
+                FabLibraryHeader("Fab Library"),
                 const SizedBox(width: 16),
                 // Search bar
                 Expanded(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 420),
-                    child: TextField(
-                      controller: _searchController,
-                      onChanged: (v) => setState(() => _query = v),
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.search),
-                        hintText: 'Search assets...',
-                        isDense: true,
-                        border: const OutlineInputBorder(),
-                        suffixIcon: _query.isNotEmpty
-                            ? IconButton(
-                                tooltip: 'Clear',
-                                icon: const Icon(Icons.clear),
-                                onPressed: () {
-                                  _searchController.clear();
-                                  setState(() => _query = '');
-                                },
-                              )
-                            : null,
-                      ),
-                    ),
+                  child: FabSearchBar(
+                    controller: _searchController,
+                    query: _query,
+                    onChanged: (v) => setState(() => _query = v),
+                    onClear: () {
+                      _searchController.clear();
+                      setState(() => _query = '');
+                    },
                   ),
                 ),
                 const SizedBox(width: 16),
-                // Version filter dropdown
-                FutureBuilder<List<FabAsset>>(
-                  future: _fabFuture,
-                  builder: (context, snapshot) {
-                    final assets = snapshot.data ?? const <FabAsset>[];
-                    // collect unique versions like '5.6', '5.5'
-                    final versions = <String>{};
-                    for (final a in assets) {
-                      for (final pv in a.projectVersions) {
-                        for (final ev in pv.engineVersions) {
-                          final parts = ev.split('_');
-                          if (parts.length > 1) {
-                            versions.add(parts[1]);
-                          }
-                        }
-                      }
-                    }
-                    int cmp(String a, String b) {
-                      int parseOrZero(String s) => int.tryParse(s) ?? 0;
-                      final as = a.split('.');
-                      final bs = b.split('.');
-                      final amaj = parseOrZero(as.isNotEmpty ? as[0] : '0');
-                      final amin = parseOrZero(as.length > 1 ? as[1] : '0');
-                      final bmaj = parseOrZero(bs.isNotEmpty ? bs[0] : '0');
-                      final bmin = parseOrZero(bs.length > 1 ? bs[1] : '0');
-                      if (amaj != bmaj) return bmaj.compareTo(amaj);
-                      return bmin.compareTo(amin);
-                    }
-                    final sorted = versions.toList()..sort(cmp);
-                    final items = <DropdownMenuItem<String>>[
-                      const DropdownMenuItem<String>(
-                        value: '',
-                        child: Text('All versions'),
-                      ),
-                      ...sorted.map((v) => DropdownMenuItem<String>(
-                            value: v,
-                            child: Text('UE $v'),
-                          )),
-                    ];
-                    return Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 200),
-                          child: DropdownButtonFormField<String>(
-                            value: _versionFilter.isEmpty ? '' : _versionFilter,
-                            items: items,
-                            onChanged: (v) => setState(() => _versionFilter = v ?? ''),
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              labelText: 'Filter by version',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        FilterChip(
-                          label: const Text('Complete projects only'),
-                          selected: _onlyCompleteProjects,
-                          onSelected: (v) => setState(() => _onlyCompleteProjects = v),
-                        ),
-                        const SizedBox(width: 12),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 220),
-                          child: DropdownButtonFormField<AssetSortMode>(
-                            value: _sortMode,
-                            items: const [
-                              DropdownMenuItem(value: AssetSortMode.newerUEFirst, child: Text('Sort: Newer UE first')),
-                              DropdownMenuItem(value: AssetSortMode.olderUEFirst, child: Text('Sort: Older UE first')),
-                              DropdownMenuItem(value: AssetSortMode.alphaAZ, child: Text('Sort: Alphabetical A–Z')),
-                              DropdownMenuItem(value: AssetSortMode.alphaZA, child: Text('Sort: Alphabetical Z–A')),
-                            ],
-                            onChanged: (v) => setState(() => _sortMode = v ?? AssetSortMode.newerUEFirst),
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              labelText: 'Sort by',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
+                FabVersionFilterDropdown(
+                  fabFuture: _fabFuture,
+                  value: _versionFilter,
+                  onChanged: (v) => setState(() => _versionFilter = v ?? ''),
+                ),
+                const SizedBox(width: 12),
+                FabCompleteProjectsFilter(
+                  selected: _onlyCompleteProjects,
+                  onChanged: (v) => setState(() => _onlyCompleteProjects = v),
+                ),
+                const SizedBox(width: 12),
+                FabSortByDropdown<AssetSortMode>(
+                  value: _sortMode,
+                  items: const [
+                    DropdownMenuItem(value: AssetSortMode.newerUEFirst, child: Text('Sort: Newer UE first')),
+                    DropdownMenuItem(value: AssetSortMode.olderUEFirst, child: Text('Sort: Older UE first')),
+                    DropdownMenuItem(value: AssetSortMode.alphaAZ, child: Text('Sort: Alphabetical A–Z')),
+                    DropdownMenuItem(value: AssetSortMode.alphaZA, child: Text('Sort: Alphabetical Z–A')),
+                  ],
+                  onChanged: (v) => setState(() => _sortMode = v ?? AssetSortMode.newerUEFirst),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            // Responsive grid (now non-scrollable; page scrolls instead)
             Container(
               decoration: BoxDecoration(
                 color: cs.surface,
@@ -815,11 +490,7 @@ class _LibraryTabState extends State<LibraryTab> {
                       if (snapshot.hasError) {
                         final err = snapshot.error;
                         // Preferred path: explicit unauthenticated exception from ApiService
-                        print("Print Line...");
                         if (err is UnauthenticatedException) {
-                          print("Error is UnauthenticatedException");
-                          print("auth");
-                          print(err.authUrl);
                           final authUrl = err.authUrl.isNotEmpty ? err.authUrl : 'https://www.epicgames.com/id/login';
                           return _buildUnauthenticatedCard(context, authUrl, err.message);
                         }
@@ -927,7 +598,7 @@ class _LibraryTabState extends State<LibraryTab> {
                           child: Text('No assets match your search.'),
                         );
                       }
-                      return _FabAssetsGrid(
+                      return FabAssetsList(
                         key: _fabKey,
                         assets: filtered,
                         crossAxisCount: crossAxisCount,
@@ -949,17 +620,17 @@ class _LibraryTabState extends State<LibraryTab> {
   }
 }
 
-class _FabAssetsGrid extends StatefulWidget {
+class FabAssetsList extends StatefulWidget {
   final VoidCallback? onLoadMore;
   final List<FabAsset> assets;
   final int crossAxisCount;
   final double spacing;
   final VoidCallback? onProjectsChanged;
   final VoidCallback? onFabListChanged;
-  const _FabAssetsGrid({Key? key, required this.assets, required this.crossAxisCount, required this.spacing, this.onLoadMore, this.onProjectsChanged, this.onFabListChanged}) : super(key: key);
+  const FabAssetsList({Key? key, required this.assets, required this.crossAxisCount, required this.spacing, this.onLoadMore, this.onProjectsChanged, this.onFabListChanged}) : super(key: key);
 
   @override
-  State<_FabAssetsGrid> createState() => _FabAssetsGridState();
+  State<FabAssetsList> createState() => FabAssetsListState();
 }
 
 class _ImportParams {
@@ -988,7 +659,7 @@ class _CreateParams {
   });
 }
 
-class _FabAssetsGridState extends State<_FabAssetsGrid> {
+class FabAssetsListState extends State<FabAssetsList> {
   // Cached highest installed UE version string like '5.6' or '4.27'
   String? _maxInstalledUe;
   // Cached set of installed major.minor versions, e.g., {'5.6','5.5'}
@@ -1766,7 +1437,7 @@ class _FabAssetsGridState extends State<_FabAssetsGrid> {
   }
 
   @override
-  void didUpdateWidget(covariant _FabAssetsGrid oldWidget) {
+  void didUpdateWidget(covariant FabAssetsList oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.assets.length != widget.assets.length) {
       // Reset to first page when data changes

@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 
-class UnrealEnginesHeader extends StatelessWidget {
+class MyProjectsHeader extends StatelessWidget {
   final String text;
   final TextAlign? textAlign;
   final TextStyle? style;
 
-  const UnrealEnginesHeader(
+  const MyProjectsHeader(
       this.text, {
         super.key,
         this.textAlign,
