@@ -39,6 +39,25 @@ class ApiService {
     return httpUri.replace(scheme: scheme);
   }
 
+  Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId}) async {
+    final path = '/download-asset/' + Uri.encodeComponent(namespace) + '/' + Uri.encodeComponent(assetId) + '/' + Uri.encodeComponent(artifactId);
+    final uri = _uri(path, jobId != null && jobId.isNotEmpty ? {'jobId': jobId} : null);
+    final res = await http.get(uri);
+    final body = res.body;
+    if (res.statusCode != 200) {
+      // Try to parse JSON {message} if ever returned, else use body
+      try {
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        final msg = data['message']?.toString() ?? body;
+        throw Exception('Download failed: ' + msg);
+      } catch (_) {
+        throw Exception('Download failed: HTTP ' + res.statusCode.toString() + ' ' + body);
+      }
+    }
+    // success: server returns plain text "Download complete" or similar
+    return DownloadAssetResult(ok: true, message: body.isNotEmpty ? body : 'Download started');
+  }
+
   Future<List<UnrealEngineInfo>> listUnrealEngines({String? baseDir}) async {
     final uri = _uri('/list-unreal-engines', baseDir != null ? {'base': baseDir} : null);
     final res = await http.get(uri);
@@ -457,6 +476,12 @@ class OpenEngineResult {
       message: json['message'] as String? ?? '',
     );
   }
+}
+
+class DownloadAssetResult {
+  final bool ok;
+  final String message;
+  DownloadAssetResult({required this.ok, required this.message});
 }
 
 class ImportAssetResult {

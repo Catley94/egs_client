@@ -1243,12 +1243,13 @@ class _FabAssetsGridState extends State<_FabAssetsGrid> {
   Future<void> _showAssetGalleryDialog(BuildContext context, FabAsset a) async {
     final images = a.images;
     int index = 0;
+    bool working = false;
+    bool downloadedNow = a.anyDownloaded;
     await showDialog<void>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setStateSB) {
-            bool working = false;
             return AlertDialog(
               contentPadding: const EdgeInsets.all(12),
               title: Text(a.title.isNotEmpty ? a.title : a.assetId),
@@ -1358,6 +1359,61 @@ class _FabAssetsGridState extends State<_FabAssetsGrid> {
                     icon: const Icon(Icons.open_in_new),
                     label: const Text('Open listing'),
                   ),
+                const SizedBox(width: 8),
+                // New: Download-only action (no import/create)
+                FilledButton.icon(
+                  onPressed: (working || downloadedNow)
+                      ? null
+                      : () async {
+                          setStateSB(() => working = true);
+                          try {
+                            // Pick an artifact to download: prefer a not-yet-downloaded version, else first available
+                            String? artifactId;
+                            final versions = a.projectVersions;
+                            if (versions.isNotEmpty) {
+                              final notDownloaded = versions.firstWhere(
+                                (v) => v.downloaded == false,
+                                orElse: () => versions.first,
+                              );
+                              artifactId = notDownloaded.artifactId;
+                            }
+                            if (artifactId == null || artifactId.isEmpty) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No downloadable artifact found for this asset.')));
+                              }
+                              return;
+                            }
+                            final jobId = _makeJobId();
+                            final dlg = _showJobProgressDialog(jobId: jobId, title: 'Downloading asset...');
+                            await _api.downloadAsset(
+                              namespace: a.assetNamespace,
+                              assetId: a.assetId,
+                              artifactId: artifactId,
+                              jobId: jobId,
+                            );
+                            // Close progress dialog if still open
+                            if (mounted) {
+                              final nav = Navigator.of(context, rootNavigator: true);
+                              if (nav.canPop()) nav.pop();
+                            }
+                            await dlg.catchError((_){ });
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Download complete')));
+                              // Mark as downloaded in this dialog and refresh list to update indicators
+                              setStateSB(() { downloadedNow = true; });
+                              widget.onFabListChanged?.call();
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to download: ' + e.toString())));
+                            }
+                          } finally {
+                            setStateSB(() => working = false);
+                          }
+                        },
+                  icon: downloadedNow ? const Icon(Icons.check) : const Icon(Icons.download),
+                  label: Text(downloadedNow ? 'Downloaded' : 'Download'),
+                ),
                 const SizedBox(width: 8),
                 FilledButton.icon(
                   onPressed: working

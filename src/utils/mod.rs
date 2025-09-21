@@ -870,10 +870,10 @@ pub struct WsSession {
 impl Actor for WsSession {
     type Context = ws::WebsocketContext<Self>;
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        if exit_on_ws_close_enabled() {
-            println!("[WS] session stopped for job {} — requesting backend shutdown", self.job_id);
-            request_shutdown();
-        }
+        // Do NOT shut down the backend on normal WS close.
+        // Backend lifecycle is managed by process signals and (in BOTH mode) by the Flutter child watcher.
+        println!("[WS] session stopped for job {}", self.job_id);
+        // Previously: if exit_on_ws_close_enabled() { request_shutdown(); }
     }
 }
 
