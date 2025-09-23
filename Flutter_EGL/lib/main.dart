@@ -14,10 +14,10 @@ Future<void> main() async {
   // Initialize the image cache so CachedNetworkImage uses a deterministic directory
   await AppImageCache.init();
 
-  if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-    const fixedSize = Size(1400, 800); // pick your fixed size
-    // Optional: set initial position/size before locking
-    // window_size.setWindowFrame(const Rect.fromLTWH(100, 100, fixedSize.width, fixedSize.height));
+  if (!kIsWeb && Platform.isLinux) {
+
+    const fixedSize = Size(1400, 800);
+
     window_size.setWindowMinSize(fixedSize);
     window_size.setWindowMaxSize(fixedSize);
 
@@ -30,7 +30,7 @@ Future<void> main() async {
       windowButtonVisibility: false,
     );
     await windowManager.waitUntilReadyToShow(options, () async {
-      if (Platform.isWindows || Platform.isLinux) {
+      if (Platform.isLinux) {
         await windowManager.setAsFrameless();
       }
       await windowManager.show();
@@ -59,7 +59,7 @@ class NavigationRailExampleApp extends StatelessWidget {
               children: [
                 child,
                 // Global top-edge drag overlay to move the native window even when overlays are shown.
-                if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+                if (!kIsWeb && Platform.isLinux)
                   const _TopEdgeWindowDragOverlay(),
                 if (kDebugMode)
                   Positioned(
@@ -120,7 +120,7 @@ class _TopDragGestureRegion extends StatelessWidget {
             try {
               await windowManager.startDragging();
             } catch (_) {
-              // ignore; not supported in this context
+              // Ignore, not supported in this context
             }
           }
         }
@@ -162,7 +162,7 @@ class _NavRailExampleState extends State<NavRailExample> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: Column(
         children: [
@@ -184,19 +184,19 @@ class _NavRailExampleState extends State<NavRailExample> {
                     labelType: _railExpanded
                         ? NavigationRailLabelType.none
                         : NavigationRailLabelType.all,
-                    backgroundColor: cs.surface,
+                    backgroundColor: colorScheme.surface,
                     extended: _railExpanded,
                     minExtendedWidth: 220,
-                    indicatorColor: cs.primary.withOpacity(0.18),
-                    selectedIconTheme: IconThemeData(color: cs.primary, size: 24),
+                    indicatorColor: colorScheme.primary.withOpacity(0.18),
+                    selectedIconTheme: IconThemeData(color: colorScheme.primary, size: 24),
                     unselectedIconTheme:
-                        IconThemeData(color: cs.onSurfaceVariant, size: 24),
+                        IconThemeData(color: colorScheme.onSurfaceVariant, size: 24),
                     selectedLabelTextStyle: TextStyle(
-                      color: cs.primary,
+                      color: colorScheme.primary,
                       fontWeight: FontWeight.w600,
                     ),
                     unselectedLabelTextStyle: TextStyle(
-                      color: cs.onSurfaceVariant,
+                      color: colorScheme.onSurfaceVariant,
                     ),
                     leading: Padding(
                       padding: const EdgeInsets.only(top: 8.0),
@@ -232,8 +232,8 @@ class _NavRailExampleState extends State<NavRailExample> {
                     trailing: const SizedBox.shrink(),
                     destinations: const <NavigationRailDestination>[
                       NavigationRailDestination(
-                        icon: Icon(Icons.bookmark_border),
-                        selectedIcon: Icon(Icons.bookmark),
+                        icon: Icon(Icons.format_underline),
+                        selectedIcon: Icon(Icons.format_underline),
                         label: Text('Unreal Engine'),
                       ),
                     ],
@@ -248,27 +248,11 @@ class _NavRailExampleState extends State<NavRailExample> {
                           child: Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(16),
-                            color: cs.background,
-                            // In dark mode we used to show a subtle gradient; for clarity and
-                            // theme consistency we use plain background from ColorScheme.
-                            // If a gradient is desired in dark mode only, we can re-introduce it
-                            // conditionally.
-                            // decoration: Theme.of(context).brightness == Brightness.dark
-                            //     ? const BoxDecoration(
-                            //         gradient: LinearGradient(
-                            //           begin: Alignment.topCenter,
-                            //           end: Alignment.bottomCenter,
-                            //           colors: [
-                            //             Color(0x11182532),
-                            //             Color(0x000F1115),
-                            //           ],
-                            //         ),
-                            //       )
-                            //     : null,
+                            color: colorScheme.surface,
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(12),
                               child: Container(
-                                color: cs.surface,
+                                color: colorScheme.surface,
                                 child: _mainContents[_selectedIndex],
                               ),
                             ),
@@ -322,18 +306,9 @@ class _WindowChromeBarState extends State<_WindowChromeBar> with WindowListener 
   @override
   void onWindowUnmaximize() => _refreshState();
 
-  Future<void> _toggleMaxRestore() async {
-    if (_isMaximized) {
-      await windowManager.unmaximize();
-    } else {
-      await windowManager.maximize();
-    }
-    _refreshState();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final colorScheme = Theme.of(context).colorScheme;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onPanStart: (_) => windowManager.startDragging(),
@@ -341,13 +316,13 @@ class _WindowChromeBarState extends State<_WindowChromeBar> with WindowListener 
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
-          color: cs.surface,
+          color: colorScheme.surface,
           border: const Border(bottom: BorderSide(color: Color(0xFF1A2027))),
         ),
         child: Row(
           children: [
             const SizedBox(width: 8),
-            const Icon(Icons.apps, size: 16),
+            const Icon(Icons.format_underline, size: 16),
             const SizedBox(width: 8),
             const Expanded(
               child: Align(
@@ -383,20 +358,29 @@ class _WinButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: InkResponse(
-        onTap: onPressed,
-        radius: 18,
-        highlightShape: BoxShape.rectangle,
-        child: Container(
-          width: 46,
-          height: 28,
-          alignment: Alignment.center,
-          child: Icon(icon, size: 16),
+      child: Material(
+        color: Colors.transparent,
+        child: Material(
+          color: Colors.transparent, // provides a Material ancestor for ink
+          child: InkResponse(
+            onTap: onPressed,
+            radius: 18,
+            containedInkWell: true,
+            highlightShape: BoxShape.rectangle,
+            highlightColor: Colors.red,
+            hoverColor: Colors.blue,
+            splashFactory: InkSplash.splashFactory,
+            customBorder: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Ink(
+              width: 46,
+              height: 28,
+              child: Center(child: Icon(icon, size: 20)),
+            ),
+          ),
         ),
-        onHover: (_) {},
-        containedInkWell: true,
-        splashFactory: InkSplash.splashFactory,
-      ),
+      )
     );
   }
 }

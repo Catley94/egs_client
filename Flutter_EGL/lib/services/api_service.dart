@@ -22,6 +22,10 @@ class AuthStart {
 
 const String kEpicLoginUrl = 'https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode';
 
+/// Service layer for talking to the Rust backend HTTP and WebSocket API.
+///
+/// All methods are thin wrappers around endpoints exposed by src/api.rs.
+/// The baseUrl defaults to http://127.0.0.1:8080 and can be overridden.
 class ApiService {
   
   Future<bool> cancelJob(String jobId) async {
@@ -48,6 +52,8 @@ class ApiService {
     return httpUri.replace(scheme: scheme);
   }
 
+  /// Download a FAB asset by namespace/assetId/artifactId.
+  /// On success returns a message from the backend; progress is streamed via WebSocket using jobId.
   Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId}) async {
     final path = '/download-asset/' + Uri.encodeComponent(namespace) + '/' + Uri.encodeComponent(assetId) + '/' + Uri.encodeComponent(artifactId);
     final uri = _uri(path, jobId != null && jobId.isNotEmpty ? {'jobId': jobId} : null);
@@ -67,6 +73,7 @@ class ApiService {
     return DownloadAssetResult(ok: true, message: body.isNotEmpty ? body : 'Download started');
   }
 
+  /// List installed Unreal Engine versions by scanning a base directory (optional).
   Future<List<UnrealEngineInfo>> listUnrealEngines({String? baseDir}) async {
     final uri = _uri('/list-unreal-engines', baseDir != null ? {'base': baseDir} : null);
     final res = await http.get(uri);
@@ -80,6 +87,7 @@ class ApiService {
     return engines;
   }
 
+  /// Launch the Unreal Editor for a given engine version (e.g., '5.3').
   Future<OpenEngineResult> openUnrealEngine({required String version}) async {
     final uri = _uri('/open-unreal-engine', {'version': version});
     final res = await http.get(uri);

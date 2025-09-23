@@ -90,6 +90,18 @@ pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
 /// Status codes:
 /// - 200 OK on success (JSON body)
 /// - 200 OK with a plain string body in some edge cases (e.g., "No details found")
+/// Returns the user's Fab library, preferring a cached JSON file when possible.
+///
+/// Behavior:
+/// - If cache/fab_list.json exists and is readable, the raw JSON (enriched with local flags when possible)
+///   is returned as application/json.
+/// - Otherwise, it falls back to performing a refresh (same behavior as /refresh-fab-list).
+///
+/// Example (curl):
+/// - curl -s http://localhost:8080/get-fab-list | jq
+///
+/// Status codes:
+/// - 200 OK on success (JSON body)
 #[get("/get-fab-list")]
 pub async fn get_fab_list() -> HttpResponse {
     let path = utils::fab_cache_file();
@@ -128,6 +140,14 @@ pub async fn get_fab_list() -> HttpResponse {
     utils::handle_refresh_fab_list().await
 }
 
+/// WebSocket endpoint used to stream progress/events to the Flutter UI.
+///
+/// Query params:
+/// - jobId or job_id: logical job identifier; messages are broadcast per job.
+///
+/// Behavior:
+/// - Subscribes client to a per-job broadcast channel.
+/// - Flushes buffered events for late subscribers, then streams live updates.
 #[get("/ws")]
 pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Query<HashMap<String, String>>) -> Result<HttpResponse, actix_web::Error> {
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned()).unwrap_or_else(|| "default".to_string());
@@ -137,6 +157,14 @@ pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Que
     resp
 }
 
+/// Forces a refresh of the user's Fab library from Epic Games Services and caches it.
+///
+/// This endpoint performs authentication (attempts cached token first), retrieves account
+/// details and Fab library items, serializes them to cache/fab_list.json, and returns the
+/// JSON list in the response.
+///
+/// Example (curl):
+/// - curl -s http://localhost:8080/refresh-fab-list | jq '.results | length'
 /// Forces a refresh of the user's Fab library from Epic Games Services and caches it.
 ///
 /// This endpoint performs authentication (attempts cached token first), retrieves account

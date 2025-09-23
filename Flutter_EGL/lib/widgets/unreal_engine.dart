@@ -1,43 +1,30 @@
 import 'package:flutter/material.dart';
 import 'library_tab_widget.dart';
-// import 'package:test_app_ui/widgets/library_tab.dart';
 
 class UnrealEngine extends StatelessWidget {
   const UnrealEngine({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return DefaultTabController(
-      length: 1,
-      child: Column(
-        children: [
-          Material(
-            color: cs.surface,
-            child: const SizedBox(
-              height: 48,
-              child: TabBar(
-                isScrollable: false,
-                indicatorSize: TabBarIndicatorSize.tab,
-                tabs: [
-                  Tab(text: 'Library'),
-                ],
-              ),
-            ),
+    final colorScheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Material(
+          color: colorScheme.surface,
+        ),
+        Expanded(
+          child: Container(
+            color: Theme.of(context).colorScheme.background,
+            child: LibraryTab(),
+            // const TabBarView(
+            //   physics: NeverScrollableScrollPhysics(),
+            //   children: [
+            //     LibraryTab(),
+            //   ],
+            // ),
           ),
-          Expanded(
-            child: Container(
-              color: Theme.of(context).colorScheme.background,
-              child: const TabBarView(
-                physics: NeverScrollableScrollPhysics(),
-                children: [
-                  LibraryTab(),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
