@@ -1,22 +1,14 @@
-// lib/widgets/library_tab.dart (new file)
 import 'package:flutter/material.dart';
-import 'package:test_app_ui/widgets/components/my_projects_header.dart';
 import 'dart:async';
 import 'dart:math';
 import 'components/fab_library_header.dart';
 import 'components/unreal_engine_versions_list_widget.dart';
-import 'fab_library_item.dart';
-import 'components/project_tile.dart';
 import '../services/api_service.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_controller.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
-import 'package:window_manager/window_manager.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import '../services/image_cache.dart';
 import './components/unreal_engine_header.dart';
 import 'components/fab_auth_card.dart';
 import 'components/projects_grid_section.dart';
@@ -25,6 +17,7 @@ import 'components/fab_version_filter_dropdown.dart';
 import 'components/fab_complete_projects_filter.dart';
 import 'components/fab_sort_by_dropdown.dart';
 import 'components/fab_assets_list.dart';
+import 'components/settings_dialog.dart';
 
 class LibraryTab extends StatefulWidget {
   const LibraryTab({super.key});
@@ -44,44 +37,6 @@ class _LibraryTabState extends State<LibraryTab> {
       onSubmit: _submitAuthCode,
       isWorking: _authWorking,
     );
-  }
-
-  Future<void> _promptAuthCodeAndSubmit(String authUrl) async {
-    // Kept for compatibility; now prefer inline input UI.
-    String code = '';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        final controller = TextEditingController();
-        return AlertDialog(
-          title: const Text('Enter authorization code'),
-          content: TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              labelText: 'authorizationCode',
-              hintText: 'Paste the code here',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-            FilledButton(onPressed: () { code = controller.text.trim(); Navigator.of(ctx).pop(true); }, child: const Text('Submit')),
-          ],
-        );
-      },
-    );
-    if (ok == true && code.isNotEmpty) {
-      final success = await _api.completeAuth(code);
-      if (!mounted) return;
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login successful. Loading your library...')));
-        setState(() {
-          _fabFuture = _api.getFabList();
-        });
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login failed. Please verify the code and try again.')));
-      }
-    }
   }
 
   Future<void> _submitAuthCode() async {
@@ -123,7 +78,6 @@ class _LibraryTabState extends State<LibraryTab> {
 
   // cache of engines for deciding version on open
   List<UnrealEngineInfo> _engines = const [];
-  bool _opening = false;
   bool _refreshingFab = false;
 
   // Settings: user-configurable paths
@@ -135,26 +89,13 @@ class _LibraryTabState extends State<LibraryTab> {
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(_onScroll);
     _api = ApiService();
   }
 
-  void _requestMoreFabItems() {
-    // Pagination mode: no-op (infinite scroll disabled)
-  }
 
-  void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final max = _scrollController.position.maxScrollExtent;
-    final pixels = _scrollController.position.pixels;
-    if (pixels >= max - 400) {
-      _requestMoreFabItems();
-    }
-  }
 
   @override
   void dispose() {
-    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _searchController.dispose();
     _projectsDirCtrl.dispose();
@@ -192,7 +133,6 @@ class _LibraryTabState extends State<LibraryTab> {
   }
 
   Future<void> _openSettingsDialog() async {
-    // Ensure latest values
     try {
       final cfg = await _api.getPathsConfig();
       final configured = cfg['configured'] as Map<String, dynamic>?;
@@ -208,130 +148,42 @@ class _LibraryTabState extends State<LibraryTab> {
       });
     } catch (_) {}
 
-    await showDialog<void>(
+    await showLibrarySettingsDialog(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Settings'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: _projectsDirCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Projects directory',
-                    hintText: '/path/to/Unreal Projects',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _enginesDirCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Engines directory',
-                    hintText: '/path/to/UnrealEngines',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _cacheDirCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Cache directory',
-                    hintText: './cache',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _downloadsDirCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Downloads directory',
-                    hintText: './downloads',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                // Theme selection
-                Row(
-                  children: [
-                    const Icon(Icons.brightness_6_outlined),
-                    const SizedBox(width: 8),
-                    const Text('Theme'),
-                    const SizedBox(width: 12),
-                    DropdownButton<ThemeMode>(
-                      value: ThemeController.instance.mode.value,
-                      items: const [
-                        DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
-                        DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
-                        DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
-                      ],
-                      onChanged: (mode) {
-                        if (mode != null) ThemeController.instance.set(mode);
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: _refreshingFab
-                            ? null
-                            : () async {
-                                setState(() {
-                                  _refreshingFab = true;
-                                });
-                                try {
-                                  final items = await _api.refreshFabList();
-                                  if (mounted) {
-                                    setState(() {
-                                      _fabFuture = Future.value(items);
-                                    });
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('Fab list refreshed (' + items.length.toString() + ' items)')),
-                                    );
-                                  }
-                                } catch (e) {
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('Failed to refresh Fab list: ' + e.toString())),
-                                    );
-                                  }
-                                } finally {
-                                  if (mounted) {
-                                    setState(() {
-                                      _refreshingFab = false;
-                                    });
-                                  }
-                                }
-                              },
-                        icon: _refreshingFab
-                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.refresh),
-                        label: const Text('Refresh Fab List'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Close'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                await _applyPaths();
-                if (context.mounted) Navigator.of(ctx).pop();
-              },
-              child: const Text('Apply'),
-            )
-          ],
-        );
+      projectsDirCtrl: _projectsDirCtrl,
+      enginesDirCtrl: _enginesDirCtrl,
+      cacheDirCtrl: _cacheDirCtrl,
+      downloadsDirCtrl: _downloadsDirCtrl,
+      refreshingFab: _refreshingFab,
+      onRefreshFabPressed: () async {
+        setState(() {
+          _refreshingFab = true;
+        });
+        try {
+          final items = await _api.refreshFabList();
+          if (mounted) {
+            setState(() {
+              _fabFuture = Future.value(items);
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Fab list refreshed (' + items.length.toString() + ' items)')),
+            );
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to refresh Fab list: ' + e.toString())),
+            );
+          }
+        } finally {
+          if (mounted) {
+            setState(() {
+              _refreshingFab = false;
+            });
+          }
+        }
       },
+      onApplyPressed: _applyPaths,
     );
   }
 
@@ -548,8 +400,8 @@ class _LibraryTabState extends State<LibraryTab> {
                         // Accept formats like '5.6', '5', 'UE_5.6'
                         String v = ver;
                         if (v.contains('_')) {
-                          final p = v.split('_');
-                          if (p.length > 1) v = p[1];
+                          final parts = v.split('_');
+                          if (parts.length > 1) v = parts[1];
                         }
                         final parts = v.split('.');
                         int major = 0;
@@ -604,7 +456,6 @@ class _LibraryTabState extends State<LibraryTab> {
                         assets: filtered,
                         crossAxisCount: crossAxisCount,
                         spacing: spacing,
-                        onLoadMore: _requestMoreFabItems,
                         onProjectsChanged: _refreshProjects,
                         onFabListChanged: _refreshFabList,
                       );

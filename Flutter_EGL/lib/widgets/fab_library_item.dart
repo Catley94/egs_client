@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:test_app_ui/theme/app_theme.dart';
 import '../services/image_cache.dart';
 
 class FabLibraryItem extends StatelessWidget {
@@ -27,13 +28,13 @@ class FabLibraryItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
         decoration: BoxDecoration(
-          color: cs.surface,
+          color: colorScheme.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
         ),
@@ -60,9 +61,9 @@ class FabLibraryItem extends StatelessWidget {
                           cacheManager: AppImageCache.manager,
                           fit: BoxFit.cover,
                           placeholder: (context, url) => const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
-                          errorWidget: (context, url, error) => Icon(Icons.broken_image, size: 40, color: cs.onSurfaceVariant),
+                          errorWidget: (context, url, error) => Icon(Icons.broken_image, size: 40, color: colorScheme.onSurfaceVariant),
                         )
-                      : Icon(Icons.image, size: 40, color: cs.onSurfaceVariant),
+                      : Icon(Icons.image, size: 40, color: colorScheme.onSurfaceVariant),
                 ),
               ),
               if (downloaded)
@@ -72,9 +73,9 @@ class FabLibraryItem extends StatelessWidget {
                   child: Container(
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: Colors.green.shade600,
+                      color: AppPalette.downloadedIconColourOf(context),
                       shape: BoxShape.circle,
-                      border: Border.all(color: cs.surface, width: 2),
+                      border: Border.all(color: colorScheme.surface, width: 2),
                     ),
                     child: const Icon(Icons.check, size: 14, color: Colors.white),
                   ),
@@ -101,8 +102,8 @@ class FabLibraryItem extends StatelessWidget {
                   child: FilledButton.icon(
                     style: useWarningStyle
                         ? FilledButton.styleFrom(
-                            backgroundColor: cs.secondaryContainer,
-                            foregroundColor: cs.onSecondaryContainer,
+                            backgroundColor: colorScheme.secondaryContainer,
+                            foregroundColor: colorScheme.onSecondaryContainer,
                           )
                         : null,
                     onPressed: isBusy
@@ -131,7 +132,7 @@ class FabLibraryItem extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],

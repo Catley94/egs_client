@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:test_app_ui/widgets/unreal_engine.dart';
 import 'theme/app_theme.dart';
 import 'theme/theme_controller.dart';
+import 'widgets/components/window_chrome_bar.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,8 +42,6 @@ Future<void> main() async {
   runApp(const NavigationRailExampleApp());
 }
 
-
-
 class NavigationRailExampleApp extends StatelessWidget {
   const NavigationRailExampleApp({super.key});
 
@@ -60,7 +59,7 @@ class NavigationRailExampleApp extends StatelessWidget {
                 child,
                 // Global top-edge drag overlay to move the native window even when overlays are shown.
                 if (!kIsWeb && Platform.isLinux)
-                  const _TopEdgeWindowDragOverlay(),
+                  const TopEdgeWindowDragOverlay(),
                 if (kDebugMode)
                   Positioned(
                     left: 0,
@@ -78,77 +77,21 @@ class NavigationRailExampleApp extends StatelessWidget {
           theme: AppTheme.light(),
           darkTheme: AppTheme.dark(),
           themeMode: ThemeController.instance.mode.value,
-          home: const NavRailExample(),
+          home: const UNavRail(),
         );
       },
     );
   }
 }
 
-class _TopEdgeWindowDragOverlay extends StatelessWidget {
-  const _TopEdgeWindowDragOverlay({super.key});
-
-  static const double _dragHeight = 56.0; // Top region (including app title area)
+class UNavRail extends StatefulWidget {
+  const UNavRail({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: IgnorePointer(
-        ignoring: false, // we want to receive gestures but let others through when not dragging
-        child: _TopDragGestureRegion(height: _dragHeight),
-      ),
-    );
-  }
+  State<UNavRail> createState() => _UNavRailState();
 }
 
-class _TopDragGestureRegion extends StatelessWidget {
-  final double height;
-  const _TopDragGestureRegion({required this.height});
-
-  bool _inDragZone(Offset pos) => pos.dy >= 0 && pos.dy <= height;
-
-  @override
-  Widget build(BuildContext context) {
-    // Use a Listener to inspect pointer positions before gestures resolve.
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (event) async {
-        // Only primary button and within top region.
-        // Primary mouse button pressed
-        if ((event.buttons & 0x01) != 0) {
-          if (_inDragZone(event.position)) {
-            try {
-              await windowManager.startDragging();
-            } catch (_) {
-              // Ignore, not supported in this context
-            }
-          }
-        }
-      },
-      onPointerMove: (event) async {
-        // If user presses then moves quickly into the zone, still allow starting drag.
-        // If mouse is down and pointer is within the top zone, initiate dragging.
-        if ((event.buttons & 0x01) != 0) {
-          if (_inDragZone(event.position)) {
-            try {
-              await windowManager.startDragging();
-            } catch (_) {}
-          }
-        }
-      },
-      child: const SizedBox.expand(),
-    );
-  }
-}
-
-class NavRailExample extends StatefulWidget {
-  const NavRailExample({super.key});
-
-  @override
-  State<NavRailExample> createState() => _NavRailExampleState();
-}
-
-class _NavRailExampleState extends State<NavRailExample> {
+class _UNavRailState extends State<UNavRail> {
   int _selectedIndex = 0;
   double groupAlignment = -1.0;
 
@@ -166,8 +109,8 @@ class _NavRailExampleState extends State<NavRailExample> {
     return Scaffold(
       body: Column(
         children: [
-          if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
-            const _WindowChromeBar(),
+          if (!kIsWeb && Platform.isLinux)
+            const WindowChromeBar(),
           Expanded(
             child: SafeArea(
               child: Row(
@@ -271,116 +214,4 @@ class _NavRailExampleState extends State<NavRailExample> {
   }
 }
 
-class _WindowChromeBar extends StatefulWidget {
-  const _WindowChromeBar();
 
-  @override
-  State<_WindowChromeBar> createState() => _WindowChromeBarState();
-}
-
-class _WindowChromeBarState extends State<_WindowChromeBar> with WindowListener {
-  bool _isMaximized = false;
-
-  @override
-  void initState() {
-    super.initState();
-    windowManager.addListener(this);
-    _refreshState();
-  }
-
-  @override
-  void dispose() {
-    windowManager.removeListener(this);
-    super.dispose();
-  }
-
-  Future<void> _refreshState() async {
-    if (!mounted) return;
-    final maximized = await windowManager.isMaximized();
-    setState(() => _isMaximized = maximized);
-  }
-
-  // WindowListener override
-  @override
-  void onWindowMaximize() => _refreshState();
-  @override
-  void onWindowUnmaximize() => _refreshState();
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onPanStart: (_) => windowManager.startDragging(),
-      child: Container(
-        height: 36,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          border: const Border(bottom: BorderSide(color: Color(0xFF1A2027))),
-        ),
-        child: Row(
-          children: [
-            const SizedBox(width: 8),
-            const Icon(Icons.format_underline, size: 16),
-            const SizedBox(width: 8),
-            const Expanded(
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Unreal Asset Manager',
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-            // Control buttons
-            _WinButton(
-              tooltip: 'Close',
-              icon: Icons.close,
-              isClose: true,
-              onPressed: () => windowManager.close(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _WinButton extends StatelessWidget {
-  final String tooltip;
-  final IconData icon;
-  final VoidCallback onPressed;
-  final bool isClose;
-  const _WinButton({required this.tooltip, required this.icon, required this.onPressed, this.isClose = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: Colors.transparent,
-        child: Material(
-          color: Colors.transparent, // provides a Material ancestor for ink
-          child: InkResponse(
-            onTap: onPressed,
-            radius: 18,
-            containedInkWell: true,
-            highlightShape: BoxShape.rectangle,
-            highlightColor: Colors.red,
-            hoverColor: Colors.blue,
-            splashFactory: InkSplash.splashFactory,
-            customBorder: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Ink(
-              width: 46,
-              height: 28,
-              child: Center(child: Icon(icon, size: 20)),
-            ),
-          ),
-        ),
-      )
-    );
-  }
-}

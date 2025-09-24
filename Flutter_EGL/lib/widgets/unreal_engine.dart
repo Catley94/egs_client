@@ -14,14 +14,8 @@ class UnrealEngine extends StatelessWidget {
         ),
         Expanded(
           child: Container(
-            color: Theme.of(context).colorScheme.background,
+            color: Theme.of(context).colorScheme.surface,
             child: LibraryTab(),
-            // const TabBarView(
-            //   physics: NeverScrollableScrollPhysics(),
-            //   children: [
-            //     LibraryTab(),
-            //   ],
-            // ),
           ),
         ),
       ],

@@ -1,5 +1,29 @@
 import 'package:flutter/material.dart';
 
+@immutable
+class AppExtras extends ThemeExtension<AppExtras> {
+  final Color downloadedIconColor;
+
+  const AppExtras({
+    required this.downloadedIconColor,
+  });
+
+  @override
+  AppExtras copyWith({Color? downloadedIconColor}) {
+    return AppExtras(
+      downloadedIconColor: downloadedIconColor ?? this.downloadedIconColor,
+    );
+  }
+
+  @override
+  AppExtras lerp(ThemeExtension<AppExtras>? other, double t) {
+    if (other is! AppExtras) return this;
+    return AppExtras(
+      downloadedIconColor: Color.lerp(downloadedIconColor, other.downloadedIconColor, t)!,
+    );
+  }
+}
+
 /// Centralized app ThemeData for light and dark modes.
 /// Uses Material 3 ColorSchemes and keeps accent colors consistent.
 class AppTheme {
@@ -13,14 +37,19 @@ class AppTheme {
       useMaterial3: true,
       brightness: Brightness.light,
       colorScheme: const ColorScheme.light(
-        background: background,
         surface: surface,
         primary: primary,
         secondary: primary,
       ).copyWith(
-        outlineVariant: const Color(0xFFCDD5DF),
+        outlineVariant: Colors.grey,
       ),
       scaffoldBackgroundColor: background,
+      extensions: const [
+        AppExtras(
+          // Light theme: a richer green
+          downloadedIconColor: Color(0xFF43A047), // Green 600
+        ),
+      ],
     );
   }
 
@@ -32,14 +61,19 @@ class AppTheme {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
-        background: background,
         surface: surface,
         primary: primary,
         secondary: primary,
       ).copyWith(
-        outlineVariant: const Color(0xFF1F2630),
+        outlineVariant: Colors.grey,
       ),
       scaffoldBackgroundColor: background,
+      extensions: const [
+        AppExtras(
+          // Dark theme: slightly brighter/warmer green to stand out on dark
+          downloadedIconColor: Color(0xFF34D399), // Emerald 400-ish
+        ),
+      ],
     );
   }
 }
@@ -50,6 +84,10 @@ class AppPalette {
   static const Color engineTileBase = Color(0xFF2563EB); // Blue 600
   static const Color projectTileBase = Color(0xFFF59E0B); // Amber 500
   static const Color fabTileBase = Color(0xFF22C55E); // Green 500
+
+  // Helper: get theme-aware downloaded icon color, with a sensible fallback.
+  static Color downloadedIconColourOf(BuildContext context) =>
+      Theme.of(context).extension<AppExtras>()?.downloadedIconColor ?? Colors.green.shade600;
 
   /// Utility: generate a subtle shade variation for grids
   static Color varied(Color base, int index, {int cycle = 5, double t = 0.15}) {
