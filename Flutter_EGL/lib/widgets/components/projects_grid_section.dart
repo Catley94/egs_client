@@ -82,6 +82,7 @@ class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject,
                       name: displayName,
                       version: versionLabel,
                       color: widget.tileColorBuilder(index),
+                      showName: true,
                       onTap: () async {
                         if (_opening) return;
                         setState(() => _opening = true);

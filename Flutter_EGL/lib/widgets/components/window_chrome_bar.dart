@@ -153,11 +153,11 @@ class TopDragGestureRegion extends StatelessWidget {
     final inZone = inX && inY;
 
     if (kDebugMode) {
-      debugPrint(
-        '[inDragZone] pos=(${pos.dx.toStringAsFixed(1)}, ${pos.dy.toStringAsFixed(1)}) '
-            'bounds=(0..$width, 0..$height) '
-            'inX=$inX inY=$inY -> $inZone',
-      );
+      // debugPrint(
+      //   '[inDragZone] pos=(${pos.dx.toStringAsFixed(1)}, ${pos.dy.toStringAsFixed(1)}) '
+      //       'bounds=(0..$width, 0..$height) '
+      //       'inX=$inX inY=$inY -> $inZone',
+      // );
     }
 
     return inZone;
@@ -173,10 +173,10 @@ class TopDragGestureRegion extends StatelessWidget {
         // Only primary button and within top region.
         if ((event.buttons & 0x01) != 0) {
           if (kDebugMode) {
-            debugPrint('pointerDown y=${event.position.dy}, x=${event.position.dx}');
+            // debugPrint('pointerDown y=${event.position.dy}, x=${event.position.dx}');
           }
           if (_inDragZone(event.position)) {
-            if (kDebugMode) debugPrint('inDragZone -> startDragging');
+            // if (kDebugMode) debugPrint('inDragZone -> startDragging');
             try {
               await windowManager.startDragging();
             } catch (_) {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 class ProjectTile extends StatelessWidget {
   final String name;
   final String version;
+  final bool showName;
   final Color color;
   final VoidCallback? onTap;
 
@@ -11,6 +12,7 @@ class ProjectTile extends StatelessWidget {
     required this.name,
     required this.version,
     required this.color,
+    required this.showName,
     this.onTap,
   });
 
@@ -117,14 +119,15 @@ class ProjectTile extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-        ),
+        if (showName)
+          Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
       ],
     );
   }

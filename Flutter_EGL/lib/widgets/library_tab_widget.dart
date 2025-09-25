@@ -242,7 +242,7 @@ class _LibraryTabState extends State<LibraryTab> {
                 ),
               ],
             ),
-            const Divider(height: 24),
+            // const Divider(height: 24),
             UnrealEnginesHeader("Engine Versions"),
             const SizedBox(height: 10),
             UnrealEngineVersionsList<UnrealEngineInfo>(
@@ -255,7 +255,7 @@ class _LibraryTabState extends State<LibraryTab> {
               },
               tileColorBuilder: (i) => AppPalette.varied(AppPalette.engineTileBase, i, cycle: 5, t: 0.2),
             ),
-            const SizedBox(height: 24),
+            // const SizedBox(height: 8),
             const Divider(height: 24),
             ProjectsList<UnrealProjectInfo, UnrealEngineInfo>(
               projectsFuture: _projectsFuture,

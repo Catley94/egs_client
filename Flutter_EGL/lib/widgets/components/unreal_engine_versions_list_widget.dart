@@ -75,12 +75,14 @@ class _UnrealEngineVersionsListState<T> extends State<UnrealEngineVersionsList<T
                 final item = engines[index];
                 final name = widget.nameOf(item);
                 final versionRaw = widget.versionOf(item);
-                final versionLabel = versionRaw.isEmpty ? 'unknown' : 'UE $versionRaw';
+                final isPreview = name.toLowerCase().contains('preview');
+                final versionLabel = versionRaw.isEmpty ? 'unknown' : 'UE $versionRaw${isPreview ? '-preview' : ''}';
 
                 return ProjectTile(
                   name: name,
                   version: versionLabel,
                   color: widget.tileColorBuilder(index),
+                  showName: false,
                   onTap: () async {
                     if (_opening) return;
                     if (versionRaw.isEmpty) {

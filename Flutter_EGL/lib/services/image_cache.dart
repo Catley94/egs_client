@@ -99,7 +99,7 @@ class AppImageCache {
       // Example (Windows): C:\\Users\\You\\AppData\\Roaming\\test_app_ui\\image_cache
       // Example (macOS): /Users/you/Library/Application Support/test_app_ui/image_cache
       // ignore: avoid_print
-      print('Image cache directory: ${cacheDir.path}');
+      // print('Image cache directory: ${cacheDir.path}');
     }
   }
 }
