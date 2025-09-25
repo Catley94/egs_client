@@ -599,7 +599,7 @@ class RefreshFabAssetResult {
 extension RefreshFabAssetApi on ApiService {
   Future<RefreshFabAssetResult> refreshFabAsset({required String assetNamespace, required String assetId}) async {
     try {
-      // Backend single-asset refresh endpoint not available; refresh whole list and read the asset state
+      // Refreshes the whole list currently
       final list = await refreshFabList();
       final asset = list.firstWhere(
         (e) => e.assetNamespace == assetNamespace && e.assetId == assetId,

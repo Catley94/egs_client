@@ -71,7 +71,7 @@ class AppTheme {
       extensions: const [
         AppExtras(
           // Dark theme: slightly brighter/warmer green to stand out on dark
-          downloadedIconColor: Color(0xFF34D399), // Emerald 400-ish
+          downloadedIconColor: Color(0xFF43A047),
         ),
       ],
     );

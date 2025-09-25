@@ -83,7 +83,6 @@ class FabLibraryItem extends StatelessWidget {
             ],
           ),
           const SizedBox(width: 16),
-          // Right: title, button, size stacked vertically
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

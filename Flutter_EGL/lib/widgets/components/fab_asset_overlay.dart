@@ -36,19 +36,11 @@ Future<void> showFabAssetOverlayDialog({
     builder: (ctx) {
       return StatefulBuilder(
         builder: (ctx, setStateSB) {
-          final cs = Theme.of(ctx).colorScheme;
+          final colorScheme = Theme.of(ctx).colorScheme;
           return AlertDialog(
             contentPadding: const EdgeInsets.all(12),
-            title: MouseRegion(
-              cursor: SystemMouseCursors.move,
-              child: GestureDetector(
-                onPanStart: (_) {
-                  // Allow moving the native window while the overlay is open
-                  windowManager.startDragging();
-                },
-                child: Text(a.title.isNotEmpty ? a.title : a.assetId),
-              ),
-            ),
+            // TODO: Currently the title is explicitly being used to move the app around
+            title: Text(a.title.isNotEmpty ? a.title : a.assetId),
             content: Builder(
               builder: (context) {
                 final size = MediaQuery.of(context).size;
@@ -59,19 +51,19 @@ Future<void> showFabAssetOverlayDialog({
                 String idNs = '${a.assetNamespace}/${a.assetId}';
                 // Compute full list of supported UE versions
                 final engines = <String>{};
-                for (final pv in a.projectVersions) {
-                  for (final ev in pv.engineVersions) {
+                for (final projectVersion in a.projectVersions) {
+                  for (final ev in projectVersion.engineVersions) {
                     final parts = ev.split('_');
                     if (parts.length > 1) engines.add(parts[1]);
                   }
                 }
                 int score(String v) {
-                  final p = v.split('.');
-                  int maj = 0;
-                  int min = 0;
-                  if (p.isNotEmpty) maj = int.tryParse(p[0]) ?? 0;
-                  if (p.length > 1) min = int.tryParse(p[1]) ?? 0;
-                  return maj * 100 + min;
+                  final parts = v.split('.');
+                  int _major = 0;
+                  int _min = 0;
+                  if (parts.isNotEmpty) _major = int.tryParse(parts[0]) ?? 0;
+                  if (parts.length > 1) _min = int.tryParse(parts[1]) ?? 0;
+                  return _major * 100 + _min;
                 }
                 final versionsFull = engines.toList()
                   ..sort((a, b) => score(b).compareTo(score(a)));
@@ -115,7 +107,7 @@ Future<void> showFabAssetOverlayDialog({
                           margin: const EdgeInsets.symmetric(horizontal: 3),
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: i == index ? cs.primary : cs.outlineVariant,
+                            color: i == index ? colorScheme.primary : colorScheme.outlineVariant,
                           ),
                         )),
                       ),
@@ -135,7 +127,7 @@ Future<void> showFabAssetOverlayDialog({
                                     if (a.anyDownloaded || downloadedNow)
                                       Chip(
                                         label: const Text('Downloaded'),
-                                        backgroundColor: Colors.green.withOpacity(0.15),
+                                        backgroundColor: Colors.green.withValues(alpha: 0.15),
                                         side: BorderSide(color: Colors.green.shade700),
                                       ),
                                     // if (a.isCompleteProject)
@@ -147,8 +139,8 @@ Future<void> showFabAssetOverlayDialog({
                                     if (a.sizeLabel.isNotEmpty)
                                       Chip(
                                         label: Text(a.sizeLabel),
-                                        backgroundColor: cs.surfaceVariant,
-                                        side: BorderSide(color: cs.outlineVariant),
+                                        backgroundColor: colorScheme.surfaceContainerHighest,
+                                        side: BorderSide(color: colorScheme.outlineVariant),
                                       ),
                                   ],
                                 ),
@@ -175,7 +167,7 @@ Future<void> showFabAssetOverlayDialog({
                           alignment: Alignment.centerLeft,
                           child: Text(
                             'Supported UE: ' + versionsFull.join(', '),
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
                           ),
                         ),
                       ],
@@ -184,7 +176,7 @@ Future<void> showFabAssetOverlayDialog({
                         alignment: Alignment.centerLeft,
                         child: Text(
                           'Distribution: ' + (dist.isEmpty ? 'unknown' : dist) + '    |    ' + idNs,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -383,6 +375,7 @@ Future<void> showFabAssetOverlayDialog({
                               onPressed: () async {
                                 try {
                                   setStateSB(() => working = true);
+                                  // Refreshes the whole list currently
                                   final result = await api.refreshFabAsset(assetNamespace: a.assetNamespace, assetId: a.assetId);
                                   if (!context.mounted) return;
                                   final ok = result.success;
