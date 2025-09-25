@@ -185,7 +185,7 @@ fn spawn_flutter(ui_path: &Path, bind_addr: &str) -> std::io::Result<Child> {
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(meta) = std::fs::metadata(&path) {
-            let mut perms = meta.permissions();
+            let perms = meta.permissions();
             let mode = perms.mode();
             if mode & 0o111 == 0 {
                 let new_mode = mode | 0o755;

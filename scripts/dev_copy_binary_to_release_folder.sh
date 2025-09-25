@@ -1,11 +1,16 @@
 #!/bin/bash
 
+set -euo pipefail
+
 RUST_PROGRAM_NAME="egs_client"
 FLUTTER_PROGRAM_NAME="Flutter_EGL"
 RELEASE_FOLDER_NAME="release"
 
+# Resolve project root (parent of the folder containing this script)
+PROJECT_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
+
 # Get version from Cargo.toml
-VERSION=$(grep -m1 '^version = ' ../Cargo.toml | cut -d '"' -f2)
+VERSION=$(grep -m1 '^version = ' "$PROJECT_ROOT/Cargo.toml" | cut -d '"' -f2)
 
 if ! command -v zip >/dev/null 2>&1; then
     echo "Error: zip command not found. Please install zip first"
@@ -14,46 +19,51 @@ fi
 
 echo "Building version: $RELEASE_FOLDER_NAME-$RUST_PROGRAM_NAME-$VERSION"
 
-echo "Removing $RELEASE_FOLDER_NAME-$RUST_PROGRAM_NAME-$VERSION.zip"
-rm ./$RELEASE_FOLDER_NAME-$RUST_PROGRAM_NAME-$VERSION.zip
-
-echo "Removing old release folder"
-rm -rf ./$RELEASE_FOLDER_NAME/files
+echo "Removing old release folder contents"
+rm -rf "$PROJECT_ROOT/$RELEASE_FOLDER_NAME/files"
 
 echo "Removing old release zipped folder"
-rm -rf ./$RELEASE_FOLDER_NAME/zipped
+rm -rf "$PROJECT_ROOT/$RELEASE_FOLDER_NAME/zipped"
 
 echo "Building Rust API release version..."
-cargo build --release || {
+(
+  cd "$PROJECT_ROOT"
+  cargo build --release
+) || {
     echo "Build failed!"
     exit 1
 }
 
 echo "Building Flutter Linux release..."
-cd ../$FLUTTER_PROGRAM_NAME && flutter build linux --release || {
+(
+  cd "$PROJECT_ROOT/$FLUTTER_PROGRAM_NAME"
+  flutter build linux --release
+) || {
     echo "Flutter build failed!"
     exit 1
 }
-cd ..
 
 echo "Making release folder within project"
-mkdir -p ./${RELEASE_FOLDER_NAME}/files/client
+mkdir -p "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files/client"
 
 echo "Creating zipped files folder"
-mkdir -p ./${RELEASE_FOLDER_NAME}/zipped
+mkdir -p "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/zipped"
 
-echo "copying (release)Rust API: ${RUST_PROGRAM_NAME} to ./${RELEASE_FOLDER_NAME}"
-cp ./target/release/$RUST_PROGRAM_NAME ./${RELEASE_FOLDER_NAME}/files
+echo "Copying (release) Rust API: ${RUST_PROGRAM_NAME} to ${PROJECT_ROOT}/${RELEASE_FOLDER_NAME}/files"
+cp "$PROJECT_ROOT/target/release/$RUST_PROGRAM_NAME" "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files/"
 
-echo "copying (release)Flutter App: ${FLUTTER_PROGRAM_NAME} to ./${RELEASE_FOLDER_NAME}"
-cp -r ./$FLUTTER_PROGRAM_NAME/build/linux/x64/release/bundle/* ./${RELEASE_FOLDER_NAME}/files/client
+echo "Copying (release) Flutter App bundle to ${PROJECT_ROOT}/${RELEASE_FOLDER_NAME}/files/client"
+cp -r "$PROJECT_ROOT/$FLUTTER_PROGRAM_NAME/build/linux/x64/release/bundle/"* "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files/client/"
 
-echo "copying release_install.sh to ./${RUST_PROGRAM_NAME}"
-cp ./release_install.sh ./${RELEASE_FOLDER_NAME}/files
-echo "copying release_uninstall.sh to ./${RUST_PROGRAM_NAME}"
-cp ./release_uninstall.sh ./${RELEASE_FOLDER_NAME}/files
+echo "Copying release_install.sh to ${PROJECT_ROOT}/${RELEASE_FOLDER_NAME}/files"
+cp "$PROJECT_ROOT/scripts/release_install.sh" "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files"
+echo "Copying release_uninstall.sh to ${PROJECT_ROOT}/${RELEASE_FOLDER_NAME}/files"
+cp "$PROJECT_ROOT/scripts/release_uninstall.sh" "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files"
 
 echo "Creating zip archive..."
-zip -r "./release/zipped/linux-release-${VERSION}.zip" "./$RELEASE_FOLDER_NAME/files"
+zip -r "$PROJECT_ROOT/release/zipped/linux-release-${VERSION}.zip" \
+    -j0 /dev/null >/dev/null 2>&1 || true
+# Zip the 'files' directory with relative paths inside the archive
+( cd "$PROJECT_ROOT/$RELEASE_FOLDER_NAME" && zip -r "zipped/linux-release-${VERSION}.zip" "files" )
 
-echo "Done! Created linux-release-v${VERSION}.zip"
+echo "Done! Created linux-release-${VERSION}.zip at $PROJECT_ROOT/release/zipped"

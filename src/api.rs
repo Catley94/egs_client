@@ -50,24 +50,18 @@
 //! - All endpoints return HttpResponse and are designed for a UI frontend to consume.
 
 use actix_web::{get, post, HttpResponse, web, Responder, HttpRequest};
-use colored::Colorize;
 use crate::utils;
 use crate::models;
 use crate::utils::EPIC_LOGIN_URL;
 
 use std::fs;
 use std::io::Read;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize};
 use serde_json;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::collections::HashMap;
-use std::sync::OnceLock;
-use dashmap::DashMap;
-use tokio::sync::broadcast;
 use actix_web_actors::ws;
-use actix::{Actor, StreamHandler, AsyncContext, ActorContext};
-use std::collections::VecDeque;
 use crate::utils::get_sender;
 
 /// Default directory names used when no config/environment override is provided.
@@ -324,7 +318,6 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                     }
                 }
 
-                let used_title_folder = title_folder.is_some();
                 let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
                 let out_root = utils::default_downloads_dir().join(folder_name);
                 // Progress callback: forward file completion percentage over WS
@@ -955,7 +948,6 @@ pub async fn root() -> HttpResponse {
 ///            }' | jq
 #[post("/create-unreal-project")]
 pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRequest>) -> impl Responder {
-    use serde::Deserialize;
     let req = body.into_inner();
     let job_id = req.job_id.clone();
     utils::emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
@@ -1222,7 +1214,7 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
 
     // Optionally update project name in .uproject file if a Name field exists
     let target_uproject = if new_uproject.exists() { new_uproject.clone() } else { new_project_dir.join(template_path.file_name().unwrap_or_default()) };
-    if let Ok(mut json_text) = fs::read_to_string(&target_uproject) {
+    if let Ok(json_text) = fs::read_to_string(&target_uproject) {
         if json_text.contains("\"FileVersion\"") || json_text.contains("\"EngineAssociation\"") {
             // Best-effort: update the FriendlyName or DisplayedName if present
             let updated = json_text

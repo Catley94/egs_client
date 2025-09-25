@@ -19,12 +19,11 @@
 //! - egs-api crate docs: https://docs.rs/egs-api
 //! - Fab asset types: https://docs.rs/egs-api/latest/egs_api/api/types/
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{VecDeque};
 use std::io;
-use egs_api::api::types::account::{AccountData, AccountInfo, UserData};
+use egs_api::api::types::account::{AccountData, UserData};
 use egs_api::api::types::fab_library::FabLibrary;
 use egs_api::EpicGames;
-use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fs;
 use std::io::Read;
@@ -34,7 +33,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
-use actix_web::{get, web, HttpRequest, HttpResponse};
+use actix_web::{HttpResponse};
 use actix_web_actors::ws;
 use dashmap::DashMap;
 use egs_api::api::types::download_manifest::DownloadManifest;
@@ -82,17 +81,6 @@ pub fn create_epic_games_services() -> EpicGames {
 pub async fn get_account_details(epic_games_services: &mut EpicGames) -> Option<AccountData> {
     // TODO What's the difference between this and get_account_info?
     epic_games_services.account_details().await
-}
-
-/// Fetches the AccountInfo for the current user ID via account_ids_details.
-///
-/// Note: This returns a Vec<AccountInfo> because the API supports batch lookup
-/// by multiple IDs; here we pass the current account ID only.
-pub async fn get_account_info(epic_games_services: &mut EpicGames) -> Option<Vec<AccountInfo>> {
-    // TODO What's the difference between this and get_account_details?
-    epic_games_services
-        .account_ids_details(vec![epic_games_services.user_details().account_id.unwrap_or_default()])
-        .await
 }
 
 // ===================== Token caching helpers =====================
@@ -732,35 +720,6 @@ pub fn resolve_project_dir_from_param(param: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn copy_dir_recursive(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<(usize, usize)> {
-    // Returns (copied, skipped)
-    let mut copied = 0usize;
-    let mut skipped = 0usize;
-    if !src.exists() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("source not found: {}", src.display())));
-    }
-    for entry in walkdir::WalkDir::new(src).follow_links(false) {
-        let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let path = entry.path();
-        let rel = path.strip_prefix(src).unwrap();
-        let target = dst.join(rel);
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&target)?;
-            continue;
-        }
-        if entry.file_type().is_file() {
-            if target.exists() && !overwrite {
-                skipped += 1;
-                continue;
-            }
-            if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
-            fs::copy(path, &target)?;
-            copied += 1;
-        }
-    }
-    Ok((copied, skipped))
-}
-
 pub fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool, job_id_opt: Option<&str>, phase: &str) -> std::io::Result<(usize, usize)> {
     // Returns (copied, skipped) while emitting percent progress (0..=100)
     use walkdir::WalkDir;
@@ -969,20 +928,6 @@ pub fn set_shutdown_sender(tx: broadcast::Sender<()>) {
     let _ = SHUTDOWN_TX.set(tx);
 }
 
-pub fn request_shutdown() {
-    if let Some(tx) = SHUTDOWN_TX.get() {
-        let _ = tx.send(());
-    }
-}
-
-fn exit_on_ws_close_enabled() -> bool {
-    if let Ok(v) = std::env::var("EGS_EXIT_ON_WS_CLOSE") {
-        let s = v.trim().to_ascii_lowercase();
-        return s == "1" || s == "true" || s == "yes";
-    }
-    false
-}
-
 pub struct WsSession {
     pub rx: broadcast::Receiver<String>,
     pub job_id: String
@@ -1144,7 +1089,6 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 
     // Fetch account details and additional account info (for diagnostics/UI display).
     let details = utils::get_account_details(&mut epic_games_services).await;
-    let info = utils::get_account_info(&mut epic_games_services).await;
 
     // Retrieve the Fab library based on the acquired account details.
     match details {
