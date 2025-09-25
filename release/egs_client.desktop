@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=egs_client
-Comment=
-Exec=/usr/share/egs_client/egs_client
-Icon=
-Terminal=false
-Type=Application
-Categories=Development

@@ -26,6 +26,9 @@ uninstall_program() {
     echo "Removing dir /home/$REAL_USER/.config/${RUST_PROGRAM_NAME}"
     sudo -u "$REAL_USER" bash -c "rm -rf ~/.config/$RUST_PROGRAM_NAME"
 
+    echo "Removing .desktop from ~/.local/share/applications"
+    sudo -u "$REAL_USER" bash -c "rm ~/.local/share/applications/$RUST_PROGRAM_NAME.desktop"
+
 }
 
 # Main

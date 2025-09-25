@@ -60,6 +60,19 @@ cp "$PROJECT_ROOT/scripts/release_install.sh" "$PROJECT_ROOT/${RELEASE_FOLDER_NA
 echo "Copying release_uninstall.sh to ${PROJECT_ROOT}/${RELEASE_FOLDER_NAME}/files"
 cp "$PROJECT_ROOT/scripts/release_uninstall.sh" "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files"
 
+echo "Generating desktop entry..."
+cat > ../${RELEASE_FOLDER_NAME}/files/${RUST_PROGRAM_NAME}.desktop <<EOF
+[Desktop Entry]
+Name=${RUST_PROGRAM_NAME}
+Comment=
+Exec=/usr/share/${RUST_PROGRAM_NAME}/${RUST_PROGRAM_NAME}
+Icon=
+Terminal=false
+Type=Application
+Categories=Development
+EOF
+
+
 echo "Creating zip archive..."
 zip -r "$PROJECT_ROOT/release/zipped/linux-release-${VERSION}.zip" \
     -j0 /dev/null >/dev/null 2>&1 || true
