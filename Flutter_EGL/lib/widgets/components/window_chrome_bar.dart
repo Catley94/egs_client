@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart' show WindowListener, windowManager, DragToMoveArea;
 
 class WindowChromeBar extends StatefulWidget {
-  const WindowChromeBar();
+  const WindowChromeBar({super.key});
 
   @override
   State<WindowChromeBar> createState() => _WindowChromeBarState();
@@ -143,7 +143,7 @@ class TopEdgeWindowDragOverlay extends StatelessWidget {
 class TopDragGestureRegion extends StatelessWidget {
   final double height;
   final double width;
-  const TopDragGestureRegion({required this.height, required this.width});
+  const TopDragGestureRegion({super.key, required this.height, required this.width});
 
   // bool _inDragZone(Offset pos) => ((pos.dy >= 0 && pos.dy <= height) && (pos.dx >= 0 && pos.dx <= width));
 

@@ -95,7 +95,7 @@ class _UNavRailState extends State<UNavRail> {
   int _selectedIndex = 0;
   double groupAlignment = -1.0;
 
-  bool _railExpanded = false;
+  final bool _railExpanded = false;
 
   // Add a list of widgets for the main content
   final List<Widget> _mainContents = const [

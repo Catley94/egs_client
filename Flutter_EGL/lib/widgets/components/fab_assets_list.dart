@@ -1,14 +1,11 @@
 import 'dart:async';
 import 'dart:math';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:window_manager/window_manager.dart';
 
 import '../../models/fab.dart';
 import '../../services/api_service.dart';
-import '../../services/image_cache.dart';
 import '../fab_library_item.dart';
 import 'fab_asset_overlay.dart';
 import 'job_progress_dialog.dart';
@@ -21,7 +18,7 @@ class FabAssetsList extends StatefulWidget {
   final double spacing;
   final VoidCallback? onProjectsChanged;
   final VoidCallback? onFabListChanged;
-  const FabAssetsList({Key? key, required this.assets, required this.crossAxisCount, required this.spacing, this.onLoadMore, this.onProjectsChanged, this.onFabListChanged}) : super(key: key);
+  const FabAssetsList({super.key, required this.assets, required this.crossAxisCount, required this.spacing, this.onLoadMore, this.onProjectsChanged, this.onFabListChanged});
 
   @override
   State<FabAssetsList> createState() => FabAssetsListState();
@@ -114,7 +111,7 @@ class FabAssetsListState extends State<FabAssetsList> {
         final token = ev.trim();
         if (token.isEmpty) continue;
         final normalized = token.startsWith('UE_') ? token.substring(3) : token;
-        if (best == null || _cmpUeVersions(normalized, best!) > 0) {
+        if (best == null || _cmpUeVersions(normalized, best) > 0) {
           best = normalized;
         }
       }
@@ -470,7 +467,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                         return DropdownMenuItem<String>(
                           value: path,
                           child: Text(
-                            label + ' (UE ' + version + ')',
+                            '$label (UE $version)',
                             overflow: TextOverflow.ellipsis,
                           ),
                         );

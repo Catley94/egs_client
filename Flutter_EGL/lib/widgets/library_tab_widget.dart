@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-import 'dart:math';
 import 'components/fab_library_header.dart';
 import 'components/unreal_engine_versions_list_widget.dart';
 import '../services/api_service.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
 import '../theme/app_theme.dart';
-import '../theme/theme_controller.dart';
-import 'package:flutter/services.dart';
 import './components/unreal_engine_header.dart';
 import 'components/fab_auth_card.dart';
 import 'components/projects_grid_section.dart';
@@ -166,13 +163,13 @@ class _LibraryTabState extends State<LibraryTab> {
               _fabFuture = Future.value(items);
             });
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Fab list refreshed (' + items.length.toString() + ' items)')),
+              SnackBar(content: Text('Fab list refreshed (${items.length} items)')),
             );
           }
         } catch (e) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Failed to refresh Fab list: ' + e.toString())),
+              SnackBar(content: Text('Failed to refresh Fab list: $e')),
             );
           }
         } finally {

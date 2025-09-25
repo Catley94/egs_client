@@ -14,7 +14,7 @@ class FabLibraryItem extends StatelessWidget {
   final VoidCallback? onTap;
   final bool useWarningStyle; // when true, style primary button in warning (yellow)
 
-  const FabLibraryItem({
+  const FabLibraryItem({super.key, 
     required this.title,
     required this.sizeLabel,
     required this.isCompleteProject,
@@ -52,7 +52,7 @@ class FabLibraryItem extends StatelessWidget {
                   width: 112,
                   height: 112,
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceVariant,
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
                     border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                   ),
                   child: (thumbnailUrl != null && thumbnailUrl!.isNotEmpty)

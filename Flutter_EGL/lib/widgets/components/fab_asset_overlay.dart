@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:window_manager/window_manager.dart';
 
 import '../../models/fab.dart';
 import '../../services/api_service.dart';
@@ -59,11 +58,11 @@ Future<void> showFabAssetOverlayDialog({
                 }
                 int score(String v) {
                   final parts = v.split('.');
-                  int _major = 0;
-                  int _min = 0;
-                  if (parts.isNotEmpty) _major = int.tryParse(parts[0]) ?? 0;
-                  if (parts.length > 1) _min = int.tryParse(parts[1]) ?? 0;
-                  return _major * 100 + _min;
+                  int major = 0;
+                  int min = 0;
+                  if (parts.isNotEmpty) major = int.tryParse(parts[0]) ?? 0;
+                  if (parts.length > 1) min = int.tryParse(parts[1]) ?? 0;
+                  return major * 100 + min;
                 }
                 final versionsFull = engines.toList()
                   ..sort((a, b) => score(b).compareTo(score(a)));
@@ -166,7 +165,7 @@ Future<void> showFabAssetOverlayDialog({
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Text(
-                            'Supported UE: ' + versionsFull.join(', '),
+                            'Supported UE: ${versionsFull.join(', ')}',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
                           ),
                         ),
@@ -175,7 +174,7 @@ Future<void> showFabAssetOverlayDialog({
                       Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          'Distribution: ' + (dist.isEmpty ? 'unknown' : dist) + '    |    ' + idNs,
+                          'Distribution: ${dist.isEmpty ? 'unknown' : dist}    |    $idNs',
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
                         ),
                       ),

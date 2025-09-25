@@ -12,7 +12,7 @@ class UnauthenticatedException implements Exception {
   final String? message;
   UnauthenticatedException({required this.authUrl, this.message});
   @override
-  String toString() => 'UnauthenticatedException(authUrl: ' + authUrl + ', message: ' + (message ?? '') + ')';
+  String toString() => 'UnauthenticatedException(authUrl: $authUrl, message: ${message ?? ''})';
 }
 
 class AuthStart {
@@ -55,7 +55,7 @@ class ApiService {
   /// Download a FAB asset by namespace/assetId/artifactId.
   /// On success returns a message from the backend; progress is streamed via WebSocket using jobId.
   Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId}) async {
-    final path = '/download-asset/' + Uri.encodeComponent(namespace) + '/' + Uri.encodeComponent(assetId) + '/' + Uri.encodeComponent(artifactId);
+    final path = '/download-asset/${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(assetId)}/${Uri.encodeComponent(artifactId)}';
     final uri = _uri(path, jobId != null && jobId.isNotEmpty ? {'jobId': jobId} : null);
     final res = await http.get(uri);
     final body = res.body;
@@ -64,9 +64,9 @@ class ApiService {
       try {
         final data = jsonDecode(body) as Map<String, dynamic>;
         final msg = data['message']?.toString() ?? body;
-        throw Exception('Download failed: ' + msg);
+        throw Exception('Download failed: $msg');
       } catch (_) {
-        throw Exception('Download failed: HTTP ' + res.statusCode.toString() + ' ' + body);
+        throw Exception('Download failed: HTTP ${res.statusCode} $body');
       }
     }
     // success: server returns plain text "Download complete" or similar
@@ -206,7 +206,7 @@ class ApiService {
         final authUrl = parsed.isNotEmpty ? parsed : kEpicLoginUrl;
         // Debug log to verify value at the source
         // ignore: avoid_print
-        print('[ApiService] unauthenticated; authUrl: ' + authUrl);
+        print('[ApiService] unauthenticated; authUrl: $authUrl');
         throw UnauthenticatedException(authUrl: authUrl, message: data['message']?.toString());
       } catch (_) {
         // If body is not JSON (e.g., proxy-generated 401), still provide a usable URL
@@ -419,7 +419,7 @@ class ProgressEvent {
   });
 
   factory ProgressEvent.fromJson(Map<String, dynamic> json) {
-    double? _parseProgress(dynamic v) {
+    double? parseProgress(dynamic v) {
       if (v == null) return null;
       if (v is num) return v.toDouble();
       if (v is String) {
@@ -432,14 +432,14 @@ class ProgressEvent {
       return null;
     }
 
-    double? progress = _parseProgress(json['progress'])
-        ?? _parseProgress(json['percentage'])
-        ?? _parseProgress(json['percent']);
+    double? progress = parseProgress(json['progress'])
+        ?? parseProgress(json['percentage'])
+        ?? parseProgress(json['percent']);
 
     Map<String, dynamic>? details;
     if (json['details'] is Map<String, dynamic>) {
       details = json['details'] as Map<String, dynamic>;
-      progress = progress ?? _parseProgress(details['progress']) ?? _parseProgress(details['percentage']) ?? _parseProgress(details['percent']);
+      progress = progress ?? parseProgress(details['progress']) ?? parseProgress(details['percentage']) ?? parseProgress(details['percent']);
     }
 
     return ProgressEvent(

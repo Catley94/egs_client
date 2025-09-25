@@ -87,7 +87,7 @@ class FabAuthCard extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 8),
-                    SelectableText('Login URL: ' + authUrl, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                    SelectableText('Login URL: $authUrl', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
                     const SizedBox(height: 16),
                     Text('Paste authorizationCode here:', style: Theme.of(context).textTheme.bodySmall),
                     const SizedBox(height: 8),

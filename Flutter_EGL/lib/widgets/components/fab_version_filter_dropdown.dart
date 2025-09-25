@@ -56,7 +56,7 @@ class FabVersionFilterDropdown extends StatelessWidget {
         return ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 200),
           child: DropdownButtonFormField<String>(
-            value: value.isEmpty ? '' : value,
+            initialValue: value.isEmpty ? '' : value,
             items: items,
             onChanged: onChanged,
             decoration: const InputDecoration(

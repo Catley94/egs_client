@@ -5,6 +5,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../../services/api_service.dart';
 
+
 /// Shows a modal dialog displaying live job progress received via WebSocket.
 ///
 /// This is a reusable component used for download/import/create flows.
@@ -31,20 +32,20 @@ Future<void> showJobProgressOverlayDialog({
   String? errorMessage;
 
   // For computing speed when backend provides byte counters
-  int? _lastBytes;
-  DateTime? _lastTs;
-  double? _speedBps; // bytes per second (smoothed)
-  final List<Map<String, dynamic>> _hist = <Map<String, dynamic>>[]; // [{t: DateTime, b: int}]
+  int? lastBytes;
+  DateTime? lastTs;
+  double? speedBps0; // bytes per second (smoothed)
+  final List<Map<String, dynamic>> hist = <Map<String, dynamic>>[]; // [{t: DateTime, b: int}]
 
-  String _fmtSpeed(double bps) {
+  String fmtSpeed(double bps) {
     if (bps.isNaN || !bps.isFinite) return '';
     const kb = 1024.0;
     const mb = kb * 1024.0;
     const gb = mb * 1024.0;
-    if (bps >= gb) return (bps / gb).toStringAsFixed(2) + ' GB/s';
-    if (bps >= mb) return (bps / mb).toStringAsFixed(2) + ' MB/s';
-    if (bps >= kb) return (bps / kb).toStringAsFixed(1) + ' KB/s';
-    return bps.toStringAsFixed(0) + ' B/s';
+    if (bps >= gb) return '${(bps / gb).toStringAsFixed(2)} GB/s';
+    if (bps >= mb) return '${(bps / mb).toStringAsFixed(2)} MB/s';
+    if (bps >= kb) return '${(bps / kb).toStringAsFixed(1)} KB/s';
+    return '${bps.toStringAsFixed(0)} B/s';
   }
 
   try {
@@ -55,10 +56,6 @@ Future<void> showJobProgressOverlayDialog({
         return StatefulBuilder(
           builder: (ctx, setStateSB) {
             sub ??= api.progressEvents(jobId).listen((ev) async {
-              // Debug: log event as interpreted by UI
-              final ptxtRaw = ev.progress == null ? 'null' : ev.progress!.toStringAsFixed(3);
-              // ignore: avoid_print
-              print('[UI][progress] job=$jobId phase=${ev.phase} message="${ev.message}" progress(raw)=$ptxtRaw');
 
               // Normalize progress to 0..100 regardless of backend scale (0..1 or 0..100)
               double? normalized;
@@ -115,34 +112,32 @@ Future<void> showJobProgressOverlayDialog({
               // Compute speed from deltas when byte counters available; then smooth using a short moving average window
               if (bytesDone != null) {
                 final now = DateTime.now();
-                if (_lastBytes != null && _lastTs != null) {
-                  final dtMs = now.difference(_lastTs!).inMilliseconds;
+                if (lastBytes != null && lastTs != null) {
+                  final dtMs = now.difference(lastTs!).inMilliseconds;
                   if (dtMs > 0) {
-                    final db = bytesDone - _lastBytes!;
+                    final db = bytesDone - lastBytes!;
                     if (db >= 0) {
                       final inst = (db * 1000) / dtMs; // instantaneous bytes per second
-                      if (speedBps == null) {
-                        speedBps = inst;
-                      }
+                      speedBps ??= inst;
                     }
                   }
                 }
-                _lastBytes = bytesDone;
-                _lastTs = now;
+                lastBytes = bytesDone;
+                lastTs = now;
 
                 // Update history and compute moving average over the last ~5 seconds
                 // Keep samples compact to avoid growth; prune old entries by time window
                 const int windowMs = 5000;
-                _hist.add({'t': now, 'b': bytesDone});
+                hist.add({'t': now, 'b': bytesDone});
                 // Prune by time
-                while (_hist.isNotEmpty && now.difference(_hist.first['t'] as DateTime).inMilliseconds > windowMs) {
-                  _hist.removeAt(0);
+                while (hist.isNotEmpty && now.difference(hist.first['t'] as DateTime).inMilliseconds > windowMs) {
+                  hist.removeAt(0);
                 }
-                if (_hist.length >= 2) {
-                  final DateTime t0 = _hist.first['t'] as DateTime;
-                  final int b0 = _hist.first['b'] as int;
-                  final DateTime t1 = _hist.last['t'] as DateTime;
-                  final int b1 = _hist.last['b'] as int;
+                if (hist.length >= 2) {
+                  final DateTime t0 = hist.first['t'] as DateTime;
+                  final int b0 = hist.first['b'] as int;
+                  final DateTime t1 = hist.last['t'] as DateTime;
+                  final int b1 = hist.last['b'] as int;
                   final int dt = t1.difference(t0).inMilliseconds;
                   if (dt > 250 && b1 >= b0) {
                     final avg = ((b1 - b0) * 1000) / dt; // bytes per second across window
@@ -172,14 +167,12 @@ Future<void> showJobProgressOverlayDialog({
                 // Update in-dialog progress state
                 percent = effective; // 0..100 scale
                 message = ev.message.isNotEmpty ? ev.message : ev.phase;
-                print("ev message: " + ev.message);
-                print("ev phase: " + ev.phase);
-                countsText = (filesDone != null && filesTotal != null) ? '${filesDone} / ${filesTotal} files' : '';
-                _speedBps = speedBps ?? _speedBps; // keep last known if null
+                countsText = (filesDone != null && filesTotal != null) ? '$filesDone / $filesTotal files' : '';
+                speedBps0 = speedBps ?? speedBps0; // keep last known if null
                 // Only show speed during download-like phases and when known
                 final isDownloading = ev.phase.toLowerCase().contains('download');
-                speedText = (isDownloading && _speedBps != null && _speedBps! > 0)
-                    ? _fmtSpeed(_speedBps!)
+                speedText = (isDownloading && speedBps0 != null && speedBps0! > 0)
+                    ? fmtSpeed(speedBps0!)
                     : '';
               });
               // Update OS-level window/taskbar progress if available
@@ -209,33 +202,62 @@ Future<void> showJobProgressOverlayDialog({
               }
             });
 
-            final p = (percent ?? 0).clamp(0, 100);
+            // Normalize percent to 0..1 for the progress indicator; keep null for indeterminate
+            final double? p01 = percent != null ? ((percent!.clamp(0.0, 100.0)) / 100.0) : null;
+
+            // Avoid duplicating counts like "23 / 128" in the message line when we already
+            // show a nice "23 / 128 files" summary above.
+            // Note: This is unrelated to RepaintBoundary. RepaintBoundary only controls how a
+            // subtree repaints; it does not create duplicate widgets. We keep this suppression
+            // because some backends send the numeric fraction as the status message at the same
+            // time we also have explicit counts available. In that case, showing both would look
+            // like a duplicate even though it’s coming from two different sources.
+            final bool messageIsJustCounts = RegExp(r'^\s*\d+\s*/\s*\d+\s*$').hasMatch(message);
+            final String? messageToShow = (countsText.isNotEmpty && messageIsJustCounts)
+                ? null
+                : (message.trim().isEmpty ? null : message.trim());
+
             return AlertDialog(
               title: Text(title),
               content: SizedBox(
                 width: 420,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    LinearProgressIndicator(value: percent != null ? (p / 100.0) : null),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        if (countsText.isNotEmpty) ...[
-                          const SizedBox(width: 12),
-                          Expanded(child: Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
-                          // Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                        ],
-                        if (speedText.isNotEmpty) ...[
+                child: RepaintBoundary(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // RepaintBoundary note:
+                      // The entire dialog content is wrapped in a RepaintBoundary so the whole progress
+                      // component repaints as a unit. RepaintBoundary does not duplicate widgets; it only
+                      // creates a separate layer for repaint isolation.
+                      LinearProgressIndicator(
+                        key: ValueKey<double?>(p01),
+                        value: p01,
+                        minHeight: 4,
+                        backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+                        valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          if (countsText.isNotEmpty) ...[
+                            const SizedBox(width: 12),
+                            Expanded(child: Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+                          ],
+                          if (speedText.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            Text(speedText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                          ],
                           const SizedBox(width: 8),
-                          Text(speedText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                          if (percent != null) Text('${(percent!.clamp(0.0, 100.0) as double).floor().toString()}%'),
                         ],
-                        const SizedBox(width: 8),
-                        if (percent != null) Text('${p.floor().toString()}%'),
+                      ),
+                      if (messageToShow != null) ...[
+                        const SizedBox(height: 8),
+                        Text(messageToShow, maxLines: 2, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall),
                       ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               actions: [

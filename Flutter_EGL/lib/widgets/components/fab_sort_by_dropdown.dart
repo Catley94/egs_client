@@ -17,7 +17,7 @@ class FabSortByDropdown<T> extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 220),
       child: DropdownButtonFormField<T>(
-        value: value,
+        initialValue: value,
         items: items,
         onChanged: onChanged,
         decoration: const InputDecoration(
