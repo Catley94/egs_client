@@ -145,6 +145,11 @@ class _LibraryTabState extends State<LibraryTab> {
       });
     } catch (_) {}
 
+    String? _appVersion;
+    try {
+      _appVersion = await _api.getVersion();
+    } catch (_) {}
+
     await showLibrarySettingsDialog(
       context: context,
       projectsDirCtrl: _projectsDirCtrl,
@@ -152,6 +157,7 @@ class _LibraryTabState extends State<LibraryTab> {
       cacheDirCtrl: _cacheDirCtrl,
       downloadsDirCtrl: _downloadsDirCtrl,
       refreshingFab: _refreshingFab,
+      appVersion: _appVersion,
       onRefreshFabPressed: () async {
         setState(() {
           _refreshingFab = true;

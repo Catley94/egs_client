@@ -891,6 +891,23 @@ pub async fn root() -> HttpResponse {
     )
 }
 
+/// Returns the backend app version derived from Cargo.toml at compile time.
+///
+/// Route:
+/// - GET /version
+///
+/// Returns JSON: { "version": "x.y.z", "name": "<package name>" }
+#[get("/version")]
+pub async fn get_version() -> HttpResponse {
+    let ver = env!("CARGO_PKG_VERSION");
+    let name = env!("CARGO_PKG_NAME");
+    let body = serde_json::json!({
+        "version": ver,
+        "name": name,
+    });
+    HttpResponse::Ok().json(body)
+}
+
 
 
 /// Creates a new Unreal Engine project from a template/sample `.uproject` using UnrealEditor `-CopyProject`.

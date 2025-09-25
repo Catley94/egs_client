@@ -13,6 +13,7 @@ Future<void> showLibrarySettingsDialog({
   required bool refreshingFab,
   required VoidCallback onRefreshFabPressed,
   required Future<void> Function() onApplyPressed,
+  String? appVersion,
 }) async {
   await showDialog<void>(
     context: context,
@@ -89,6 +90,14 @@ Future<void> showLibrarySettingsDialog({
                       label: const Text('Refresh Fab List'),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'App version: ${appVersion ?? 'unknown'}',
+                  style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.8)),
                 ),
               ),
             ],
