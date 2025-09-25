@@ -12,6 +12,15 @@ build-both:
     cargo build --release
     cd Flutter_EGL && flutter clean && flutter pub get && flutter build linux --release
 
+package:
+    bash -c "./scripts/dev_copy_binary_to_release_folder.sh"
+
+install-release:
+    cd release/files && sudo bash -c "./release_install.sh"
+
+uninstall-release:
+    cd release/files && sudo bash -c "./release_uninstall.sh"
+
 # Test
 test:
     cargo test

@@ -61,7 +61,7 @@ echo "Copying release_uninstall.sh to ${PROJECT_ROOT}/${RELEASE_FOLDER_NAME}/fil
 cp "$PROJECT_ROOT/scripts/release_uninstall.sh" "$PROJECT_ROOT/${RELEASE_FOLDER_NAME}/files"
 
 echo "Generating desktop entry..."
-cat > ../${RELEASE_FOLDER_NAME}/files/${RUST_PROGRAM_NAME}.desktop <<EOF
+cat > "$PROJECT_ROOT"/${RELEASE_FOLDER_NAME}/files/${RUST_PROGRAM_NAME}.desktop <<EOF
 [Desktop Entry]
 Name=${RUST_PROGRAM_NAME}
 Comment=

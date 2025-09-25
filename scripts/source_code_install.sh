@@ -100,6 +100,11 @@ install_program() {
     echo "Making /usr/share/$RUST_PROGRAM_NAME/client/$FLUTTER_APP_NAME binary executable"
     chmod +x "/usr/share/${RUST_PROGRAM_NAME}/client/${FLUTTER_APP_NAME}"
 
+    # Copy .desktop file to ~/.local/share/applications
+    echo "Copying ./$RUST_PROGRAM_NAME.desktop to ~/.local/share/applications"
+    sudo -u "$REAL_USER" bash -c  "cp ./$RUST_PROGRAM_NAME.desktop ~/.local/share/applications"
+
+
 }
 
 # Main
