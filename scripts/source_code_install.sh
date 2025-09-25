@@ -58,13 +58,13 @@ check_rust() {
 # Build release version
 build_release() {
     echo "Building Rust API release version..."
-    sudo -u "$REAL_USER" bash -c 'source "$HOME/.cargo/env" 2>/dev/null && cargo build --release' || {
+    sudo -u "$REAL_USER" bash -c 'source "$HOME/.cargo/env" 2>/dev/null && cd .. && cargo build --release' || {
         echo "Rust API Build failed!"
         exit 1
     }
 
     echo "Building Flutter App release version..."
-    sudo -u "$REAL_USER" bash -c 'cd ./'"${FLUTTER_PROGRAM_NAME}"' && '"$FLUTTER_BIN"' build linux --release' || {
+    sudo -u "$REAL_USER" bash -c 'cd ../'"${FLUTTER_PROGRAM_NAME}"' && '"$FLUTTER_BIN"' build linux --release' || {
         echo "Flutter failed!"
         exit 1
     }
@@ -89,13 +89,13 @@ install_program() {
 
     # Copy Rust API binary
     echo "Copying $RUST_PROGRAM_NAME binary to /usr/share/$RUST_PROGRAM_NAME"
-    cp "./target/release/${RUST_PROGRAM_NAME}" "/usr/share/${RUST_PROGRAM_NAME}/"
+    cp "../target/release/${RUST_PROGRAM_NAME}" "/usr/share/${RUST_PROGRAM_NAME}/"
     echo "Making /usr/share/$RUST_PROGRAM_NAME/$RUST_PROGRAM_NAME binary executable"
     chmod +x "/usr/share/${RUST_PROGRAM_NAME}/${RUST_PROGRAM_NAME}"
 
     # Copy Flutter App binary files
     echo "Copying $FLUTTER_PROGRAM_NAME binary to /usr/share/$RUST_PROGRAM_NAME/client"
-    cp -a "./${FLUTTER_PROGRAM_NAME}/build/linux/x64/release/bundle" "/usr/share/${RUST_PROGRAM_NAME}/client"
+    cp -a "../${FLUTTER_PROGRAM_NAME}/build/linux/x64/release/bundle" "/usr/share/${RUST_PROGRAM_NAME}/client"
     echo "Making /usr/share/$RUST_PROGRAM_NAME/client/$FLUTTER_PROGRAM_NAME binary executable"
     chmod +x "/usr/share/${RUST_PROGRAM_NAME}/client/${FLUTTER_PROGRAM_NAME}"
 
