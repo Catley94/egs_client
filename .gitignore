@@ -128,3 +128,4 @@ app.*.symbols
 /.idea
 cache/home/.egs_client_tokens.json
 /cache
+/release
