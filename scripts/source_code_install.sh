@@ -1,7 +1,8 @@
 #!/bin/bash
 
 RUST_PROGRAM_NAME="egs_client"
-FLUTTER_PROGRAM_NAME="Flutter_EGL"
+FLUTTER_DIRECTORY_NAME="Flutter_EGL"
+FLUTTER_APP_NAME="test_app_ui"
 ALIASES=("egs_client")
 
 # Check if running as root
@@ -64,7 +65,7 @@ build_release() {
     }
 
     echo "Building Flutter App release version..."
-    sudo -u "$REAL_USER" bash -c 'cd ../'"${FLUTTER_PROGRAM_NAME}"' && '"$FLUTTER_BIN"' build linux --release' || {
+    sudo -u "$REAL_USER" bash -c 'cd ../'"${FLUTTER_DIRECTORY_NAME}"' && '"$FLUTTER_BIN"' build linux --release' || {
         echo "Flutter failed!"
         exit 1
     }
@@ -94,10 +95,10 @@ install_program() {
     chmod +x "/usr/share/${RUST_PROGRAM_NAME}/${RUST_PROGRAM_NAME}"
 
     # Copy Flutter App binary files
-    echo "Copying $FLUTTER_PROGRAM_NAME binary to /usr/share/$RUST_PROGRAM_NAME/client"
-    cp -a "../${FLUTTER_PROGRAM_NAME}/build/linux/x64/release/bundle" "/usr/share/${RUST_PROGRAM_NAME}/client"
-    echo "Making /usr/share/$RUST_PROGRAM_NAME/client/$FLUTTER_PROGRAM_NAME binary executable"
-    chmod +x "/usr/share/${RUST_PROGRAM_NAME}/client/${FLUTTER_PROGRAM_NAME}"
+    echo "Copying $FLUTTER_DIRECTORY_NAME binary to /usr/share/$RUST_PROGRAM_NAME/client"
+    cp -a "../${FLUTTER_DIRECTORY_NAME}/build/linux/x64/release/bundle" "/usr/share/${RUST_PROGRAM_NAME}/client"
+    echo "Making /usr/share/$RUST_PROGRAM_NAME/client/$FLUTTER_APP_NAME binary executable"
+    chmod +x "/usr/share/${RUST_PROGRAM_NAME}/client/${FLUTTER_APP_NAME}"
 
 }
 
