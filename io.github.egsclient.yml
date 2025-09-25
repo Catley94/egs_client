@@ -1,0 +1,62 @@
+app-id: io.github.egsclient
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: test_app_ui
+
+# Permissions required by the app. Adjust as needed.
+finish-args:
+  # Graphics and windowing
+  - --socket=x11
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Audio (if the app plays sounds)
+  - --socket=pulseaudio
+  # Network access (API downloads, etc.)
+  - --share=network
+  # File access: allow access to Downloads folder where users typically store assets
+  - --filesystem=xdg-download
+  # Portals (file chooser, etc.)
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.FileChooser
+
+modules:
+  - name: rust
+    buildsystem: simple
+    build-commands:
+      - echo "Installing rust toolchain"
+    sources:
+      - type: archive
+        url: https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz
+  - name: egsclient
+    buildsystem: simple
+    build-options:
+      env:
+        # Make the Flutter and Dart binaries available
+        PATH: /usr/lib/sdk/flutter/bin:/usr/lib/sdk/flutter/bin/cache/dart-sdk/bin:/usr/bin:/bin
+    build-commands:
+      # 1) Build the Rust backend
+      - bash -lc 'cargo --version && rustc --version'
+      - bash -lc 'cargo build --release'
+      - install -d /app/bin
+      - install -Dm755 target/release/egs_client /app/bin/egs_client
+
+      # 2) Build the Flutter Linux bundle (frontend)
+      - bash -lc 'cd Flutter_EGL && flutter --version && flutter config --no-analytics && flutter config --enable-linux-desktop && flutter pub get'
+      - bash -lc 'cd Flutter_EGL && flutter build linux --release'
+
+      # Install the bundle in a layout that keeps the binary and its data/lib siblings together.
+      # This preserves the $ORIGIN/lib and data lookups configured by Flutter's CMake.
+      - install -d /app/bin
+      - install -Dm755 Flutter_EGL/build/linux/x64/release/bundle/test_app_ui /app/bin/test_app_ui
+      - cp -r Flutter_EGL/build/linux/x64/release/bundle/lib /app/bin/
+      - cp -r Flutter_EGL/build/linux/x64/release/bundle/data /app/bin/
+
+      # Desktop integration
+      - install -Dm644 packaging/flatpak/io.github.egsclient.desktop /app/share/applications/io.github.egsclient.desktop
+      - install -Dm644 packaging/flatpak/io.github.egsclient.metainfo.xml /app/share/metainfo/io.github.egsclient.metainfo.xml
+      - install -Dm644 Flutter_EGL/web/icons/Icon-512.png /app/share/icons/hicolor/512x512/apps/io.github.egsclient.png
+    sources:
+      - type: dir
+        path: .

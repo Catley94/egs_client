@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=EGS Client
+Comment=Manage and process assets with the EGS Client
+Exec=test_app_ui
+Icon=io.github.egsclient
+Terminal=false
+Categories=Graphics;Utility;
+StartupNotify=true
+X-Flatpak=io.github.egsclient

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.egsclient</id>
+  <name>EGS Client</name>
+  <summary>Manage and process assets with the EGS Client</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>EGS Client is a desktop application built with Flutter for managing and processing assets.</p>
+  </description>
+  <categories>
+    <category>Graphics</category>
+    <category>Utility</category>
+  </categories>
+  <launchable type="desktop-id">io.github.egsclient.desktop</launchable>
+  <releases>
+    <release version="0.1.0" date="2025-09-25">
+      <description>
+        <p>Initial Flatpak packaging for Flathub.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>test_app_ui</binary>
+  </provides>
+</component>
