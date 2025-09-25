@@ -99,12 +99,6 @@ install_program() {
     echo "Making /usr/share/$RUST_PROGRAM_NAME/client/$FLUTTER_PROGRAM_NAME binary executable"
     chmod +x "/usr/share/${RUST_PROGRAM_NAME}/client/${FLUTTER_PROGRAM_NAME}"
 
-    # Create symlink(s)
-    for alias in "${ALIASES[@]}"; do
-      echo "Creating symbolic link in /usr/local/bin for ${alias} so it can be launched from terminal"
-      ln -sf "/usr/share/${RUST_PROGRAM_NAME}/${RUST_PROGRAM_NAME}" "/usr/local/bin/${alias}"
-    done
-
 }
 
 # Main

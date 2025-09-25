@@ -1,7 +1,6 @@
 #!/bin/bash
 
 RUST_PROGRAM_NAME="egs_client"
-ALIASES=("egs_client")
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -28,13 +27,6 @@ uninstall_program() {
     # Copy Rust and Flutter binaries
     echo "Removing $RUST_PROGRAM_NAME from /usr/share/"
     rm -rf "/usr/share/${RUST_PROGRAM_NAME:?}/"
-
-
-    # Create symlink(s)
-    for alias in "${ALIASES[@]}"; do
-      echo "Removing symbolic link in /usr/local/bin for ${alias}"
-      rm "/usr/local/bin/${alias}"
-    done
 
 }
 
