@@ -10,15 +10,27 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  GtkWindow* window;
+  FlView* view;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+// Intercept window close to perform a clean shutdown on Linux.
+static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data) {
+  GApplication* app = G_APPLICATION(user_data);
+  // Trigger application shutdown sequence.
+  g_application_quit(app);
+  // Return FALSE to allow GTK to continue destroying the window widgets.
+  return FALSE;
+}
 
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
+  self->window = window;
 
   // Use a header bar when running in GNOME as this is the common style used
   // by applications and is the setup most users will be using (e.g. Ubuntu
@@ -50,10 +62,13 @@ static void my_application_activate(GApplication* application) {
   gtk_window_set_default_size(window, 1280, 720);
   gtk_widget_show(GTK_WIDGET(window));
 
+  g_signal_connect(G_OBJECT(window), "delete-event", G_CALLBACK(on_window_delete), application);
+
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(project, self->dart_entrypoint_arguments);
 
   FlView* view = fl_view_new(project);
+  self->view = view;
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
 
@@ -92,10 +107,19 @@ static void my_application_startup(GApplication* application) {
 
 // Implements GApplication::shutdown.
 static void my_application_shutdown(GApplication* application) {
-  //MyApplication* self = MY_APPLICATION(object);
+  MyApplication* self = MY_APPLICATION(application);
 
-  // Perform any actions required at application shutdown.
+  // Ensure the Flutter view is properly removed before shutdown to avoid
+  // implicit view removal warnings and potential lag during teardown.
+  if (self->view != nullptr) {
+    if (self->window != nullptr && GTK_IS_CONTAINER(self->window)) {
+      // Detach the view from the window first.
+      gtk_container_remove(GTK_CONTAINER(self->window), GTK_WIDGET(self->view));
+    }
+    g_clear_object(&self->view);
+  }
 
+  // Perform any additional actions required at application shutdown.
   G_APPLICATION_CLASS(my_application_parent_class)->shutdown(application);
 }
 
