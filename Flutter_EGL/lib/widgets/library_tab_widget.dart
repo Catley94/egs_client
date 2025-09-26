@@ -161,6 +161,8 @@ class _LibraryTabState extends State<LibraryTab> {
       onRefreshFabPressed: () async {
         setState(() {
           _refreshingFab = true;
+          // Clear the current fab list to show progress indicator
+          _fabFuture = Future.value(<FabAsset>[]);
         });
         try {
           final items = await _api.refreshFabList();
@@ -177,6 +179,10 @@ class _LibraryTabState extends State<LibraryTab> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Failed to refresh Fab list: $e')),
             );
+            // Restore original fab list on error
+            setState(() {
+              _fabFuture = _api.getFabList();
+            });
           }
         } finally {
           if (mounted) {
@@ -449,6 +455,13 @@ class _LibraryTabState extends State<LibraryTab> {
                           });
                       }
                       if (filtered.isEmpty) {
+                        // Show loading indicator if we're refreshing, otherwise show "no assets" message
+                        if (_refreshingFab) {
+                          return const Padding(
+                            padding: EdgeInsets.all(24.0),
+                            child: Center(child: CircularProgressIndicator()),
+                          );
+                        }
                         return const Padding(
                           padding: EdgeInsets.all(16.0),
                           child: Text('No assets match your search.'),
