@@ -31,6 +31,8 @@ Future<void> showFabAssetOverlayDialog({
   bool downloadedNow = a.anyDownloaded;
   String? selectedVersion; // e.g., '5.6'
   final Set<String> downloadedVersionsNow = <String>{};
+  // Use a root-level context for SnackBars to avoid using a possibly deactivated dialog context across awaits
+  final BuildContext rootScaffoldCtx = Navigator.of(context, rootNavigator: true).context;
 
   await showDialog<void>(
     context: context,
@@ -223,11 +225,11 @@ Future<void> showFabAssetOverlayDialog({
                                           final nav = Navigator.of(context, rootNavigator: true);
                                           if (nav.canPop()) nav.pop();
                                         }
-                                        await dlg.catchError((_ ){});
+                                        await dlg.catchError((_) {});
                                         if (!context.mounted) return;
                                         final ok = res.success;
                                         final msg = res.message.isNotEmpty ? res.message : (ok ? 'OK' : 'Failed');
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                           SnackBar(content: Text(msg)),
                                         );
                                         if (ok && !params.dryRun) {
@@ -254,7 +256,7 @@ Future<void> showFabAssetOverlayDialog({
                                         if (!context.mounted) return;
                                         final ok = result.success;
                                         final msg = result.message.isNotEmpty ? result.message : (ok ? 'OK' : 'Failed');
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                           SnackBar(content: Text(msg)),
                                         );
                                         if (ok) {
@@ -263,7 +265,7 @@ Future<void> showFabAssetOverlayDialog({
                                       }
                                     } catch (e) {
                                       if (!context.mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                         SnackBar(content: Text('Operation failed: $e')),
                                       );
                                     } finally {
@@ -305,10 +307,11 @@ Future<void> showFabAssetOverlayDialog({
                             onPressed: disableDownload
                                 ? null
                                 : () async {
+                                    bool overlayClosed = false;
                                     try {
                                       setStateSB(() => working = true);
                                       if (a.projectVersions.isEmpty) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                           const SnackBar(content: Text('No versions available to download')),
                                         );
                                         return;
@@ -354,11 +357,15 @@ Future<void> showFabAssetOverlayDialog({
 
                                       final artifactId = artifactForVersion(a, selectedVersion) ?? pickBestArtifactId(a) ?? (a.projectVersions.isNotEmpty ? a.projectVersions.last.artifactId : '');
                                       if (artifactId.isEmpty) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                           const SnackBar(content: Text('No artifact ID found for this asset')),
                                         );
                                         return;
                                       }
+                                      // Close the overlay first to avoid deactivated context issues when starting another download
+                                      final NavigatorState rootNav = Navigator.of(context, rootNavigator: true);
+                                      if (rootNav.canPop()) rootNav.pop();
+                                      overlayClosed = true;
                                       // Show progress overlay and stream WS progress for this download
                                       final jobId = makeJobId();
                                       final dlg = showJobProgressDialog(jobId: jobId, title: 'Downloading asset...');
@@ -375,29 +382,33 @@ Future<void> showFabAssetOverlayDialog({
                                         if (nav.canPop()) nav.pop();
                                       }
                                       await dlg.catchError((_ ){});
-                                      if (!context.mounted) return;
+                                      // Do not use setState after overlay has been closed
                                       final msg = res.message.isNotEmpty ? res.message : 'Download started';
                                       final wasCancelled = msg.toLowerCase().contains('cancel');
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                         SnackBar(content: Text(msg)),
                                       );
                                       if (!wasCancelled) {
                                         // Mark as downloaded locally for the selected version and request a list refresh
-                                        setStateSB(() {
-                                          downloadedNow = true;
-                                          if (selectedVersion != null && selectedVersion!.isNotEmpty) {
-                                            downloadedVersionsNow.add(selectedVersion!);
-                                          }
-                                        });
+                                        if (!overlayClosed) {
+                                          setStateSB(() {
+                                            downloadedNow = true;
+                                            if (selectedVersion != null && selectedVersion!.isNotEmpty) {
+                                              downloadedVersionsNow.add(selectedVersion!);
+                                            }
+                                          });
+                                        }
                                         onFabListChanged?.call();
                                       }
                                     } catch (e) {
-                                      if (!context.mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      // If overlay is closed, avoid context-mounted checks & setState
+                                      ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                         SnackBar(content: Text('Failed to start download: $e')),
                                       );
                                     } finally {
-                                      setStateSB(() => working = false);
+                                      if (!overlayClosed) {
+                                        setStateSB(() => working = false);
+                                      }
                                     }
                                   },
                             icon: const Icon(Icons.download),
@@ -434,14 +445,14 @@ Future<void> showFabAssetOverlayDialog({
                                   final ok = result.success;
                                   if (ok) downloadedNow = result.anyDownloaded;
                                   final msg = result.message.isNotEmpty ? result.message : (ok ? 'Metadata refreshed' : 'Failed to refresh metadata');
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                     SnackBar(content: Text(msg)),
                                   );
                                   // Notify parent list to refresh the list display
                                   if (ok) onFabListChanged?.call();
                                 } catch (e) {
                                   if (!context.mounted) return;
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                     SnackBar(content: Text('Failed to refresh metadata: $e')),
                                   );
                                 } finally {

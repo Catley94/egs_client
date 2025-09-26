@@ -49,6 +49,8 @@ Future<void> showJobProgressOverlayDialog({
   }
 
   try {
+    // Use a stable root navigator to avoid looking up with a deactivated dialog context
+    final NavigatorState rootNav = Navigator.of(context, rootNavigator: true);
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -189,15 +191,15 @@ Future<void> showJobProgressOverlayDialog({
                 hadError = true;
                 errorMessage = ev.message.isNotEmpty ? ev.message : 'An error occurred';
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
-                if (Navigator.of(ctx).canPop()) {
-                  Navigator.of(ctx).pop();
+                if (rootNav.canPop()) {
+                  rootNav.pop();
                 }
                 return; // stop handling further for this event
               }
               if ((effective != null && effective >= 100.0) || ph == 'done' || ph == 'completed' || ph == 'cancel' || ph == 'cancelled') {
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
-                if (Navigator.of(ctx).canPop()) {
-                  Navigator.of(ctx).pop();
+                if (rootNav.canPop()) {
+                  rootNav.pop();
                 }
               }
             });
@@ -266,7 +268,7 @@ Future<void> showJobProgressOverlayDialog({
                     setStateSB(() { cancelling = true; message = 'Cancelling…'; });
                     try { await api.cancelJob(jobId); } catch (_) {}
                     try { await windowManager.setProgressBar(-1); } catch (_) {}
-                    if (Navigator.of(ctx).canPop()) { Navigator.of(ctx).pop(); }
+                    if (rootNav.canPop()) { rootNav.pop(); }
                   },
                   icon: const Icon(Icons.cancel),
                   label: Text(cancelling ? 'Cancelling…' : 'Cancel'),

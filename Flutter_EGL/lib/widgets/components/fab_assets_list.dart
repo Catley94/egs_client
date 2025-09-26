@@ -187,10 +187,12 @@ class FabAssetsListState extends State<FabAssetsList> {
   }
 
   Future<void> _launchExternal(String url) async {
+    // Use root navigator context for SnackBars to avoid deactivated widget ancestor issues
+    final BuildContext navCtx = Navigator.of(context, rootNavigator: true).context;
     final uri = Uri.tryParse(url);
     if (uri == null) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(navCtx).showSnackBar(
         const SnackBar(content: Text('Invalid URL')),
       );
       return;
@@ -198,13 +200,13 @@ class FabAssetsListState extends State<FabAssetsList> {
     try {
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!ok && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(navCtx).showSnackBar(
           const SnackBar(content: Text('Could not open link')),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(navCtx).showSnackBar(
           SnackBar(content: Text('Failed to launch: $e')),
         );
       }
@@ -219,7 +221,10 @@ class FabAssetsListState extends State<FabAssetsList> {
       api: _api,
       promptCreateProject: (ctx, asset) => _promptCreateProject(ctx, asset),
       promptImport: (ctx, asset) => _promptImport(ctx, asset),
-      showJobProgressDialog: ({required String jobId, required String title}) => showJobProgressOverlayDialog(context: context, api: _api, jobId: jobId, title: title),
+      showJobProgressDialog: ({required String jobId, required String title}) {
+        final navCtx = Navigator.of(context, rootNavigator: true).context;
+        return showJobProgressOverlayDialog(context: navCtx, api: _api, jobId: jobId, title: title);
+      },
       makeJobId: () => _makeJobId(),
       launchExternal: (url) => _launchExternal(url),
       onProjectsChanged: widget.onProjectsChanged,
@@ -283,7 +288,8 @@ class FabAssetsListState extends State<FabAssetsList> {
                       setState(() => _busy.add(globalIndex));
                       try {
                         final jobId = _makeJobId();
-                        final dlg = showJobProgressOverlayDialog(context: context, api: _api, jobId: jobId, title: 'Creating project...');
+                        final navCtx = Navigator.of(context, rootNavigator: true).context;
+                        final dlg = showJobProgressOverlayDialog(context: navCtx, api: _api, jobId: jobId, title: 'Creating project...');
                         final res = await _api.createUnrealProject(
                           enginePath: params.enginePath,
                           templateProject: params.templateProject,
@@ -302,7 +308,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                         if (!mounted) return;
                         final ok = res.success;
                         final msg = res.message.isNotEmpty ? res.message : (ok ? 'OK' : 'Failed');
-                        ScaffoldMessenger.of(context).showSnackBar(
+                        ScaffoldMessenger.of(navCtx).showSnackBar(
                           SnackBar(content: Text(msg)),
                         );
                         if (ok && !params.dryRun) {
@@ -313,7 +319,8 @@ class FabAssetsListState extends State<FabAssetsList> {
                         }
                       } catch (e) {
                         if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
+                        final navCtx = Navigator.of(context, rootNavigator: true).context;
+                        ScaffoldMessenger.of(navCtx).showSnackBar(
                           SnackBar(content: Text('Failed to create project: $e')),
                         );
                       } finally {
@@ -358,7 +365,8 @@ class FabAssetsListState extends State<FabAssetsList> {
                     try {
                       final name = a.title.isNotEmpty ? a.title : a.assetId;
                       final jobId = _makeJobId();
-                      final dlg = showJobProgressOverlayDialog(context: context, api: _api, jobId: jobId, title: 'Importing asset...');
+                      final navCtx = Navigator.of(context, rootNavigator: true).context;
+                      final dlg = showJobProgressOverlayDialog(context: navCtx, api: _api, jobId: jobId, title: 'Importing asset...');
                       final result = await _api.importAsset(
                         assetName: name,
                         project: params.project,
@@ -374,7 +382,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                       await dlg.catchError((_ ){});
                       if (!mounted) return;
                       final msg = result.message.isNotEmpty ? result.message : (result.success ? 'Import started' : 'Import failed');
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      ScaffoldMessenger.of(navCtx).showSnackBar(
                         SnackBar(content: Text(msg)),
                       );
                       if (result.success) {
@@ -383,7 +391,8 @@ class FabAssetsListState extends State<FabAssetsList> {
                       }
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      final navCtx = Navigator.of(context, rootNavigator: true).context;
+                      ScaffoldMessenger.of(navCtx).showSnackBar(
                         SnackBar(content: Text('Failed to import: $e')),
                       );
                     } finally {
