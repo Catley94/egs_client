@@ -294,7 +294,18 @@ Future<void> showFabAssetOverlayDialog({
                                     isDense: true,
                                     items: versionsFull.map((v) => DropdownMenuItem<String>(
                                       value: v,
-                                      child: Text(v),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (_isVersionDownloaded(v)) ...[
+                                            Icon(Icons.check, size: 16, color: Colors.green.shade700),
+                                            const SizedBox(width: 6),
+                                          ] else ...[
+                                            const SizedBox(width: 22), // reserve space to align text
+                                          ],
+                                          Text(v),
+                                        ],
+                                      ),
                                     )).toList(),
                                     onChanged: (v) => setStateSB(() => selectedVersion = v),
                                   ),
