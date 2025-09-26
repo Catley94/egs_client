@@ -54,9 +54,12 @@ class ApiService {
 
   /// Download a FAB asset by namespace/assetId/artifactId.
   /// On success returns a message from the backend; progress is streamed via WebSocket using jobId.
-  Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId}) async {
+  Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId, String? ueVersion}) async {
     final path = '/download-asset/${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(assetId)}/${Uri.encodeComponent(artifactId)}';
-    final uri = _uri(path, jobId != null && jobId.isNotEmpty ? {'jobId': jobId} : null);
+    final qp = <String, String>{};
+    if (jobId != null && jobId.isNotEmpty) qp['jobId'] = jobId;
+    if (ueVersion != null && ueVersion.isNotEmpty) qp['ue'] = ueVersion;
+    final uri = _uri(path, qp.isNotEmpty ? qp : null);
     final res = await http.get(uri);
     final body = res.body;
     if (res.statusCode != 200) {

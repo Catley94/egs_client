@@ -29,6 +29,8 @@ Future<void> showFabAssetOverlayDialog({
   int index = 0;
   bool working = false;
   bool downloadedNow = a.anyDownloaded;
+  String? selectedVersion; // e.g., '5.6'
+  final Set<String> downloadedVersionsNow = <String>{};
 
   await showDialog<void>(
     context: context,
@@ -66,6 +68,20 @@ Future<void> showFabAssetOverlayDialog({
                 }
                 final versionsFull = engines.toList()
                   ..sort((a, b) => score(b).compareTo(score(a)));
+
+                // Initialize default selected version to latest if not set
+                selectedVersion ??= versionsFull.isNotEmpty ? versionsFull.first : null;
+
+                bool _pvSupportsMm(FabProjectVersion pv, String mm) => pv.engineVersions.any((ev) => ev.trim() == 'UE_' + mm);
+                bool _isVersionDownloaded(String mm) {
+                  if (downloadedVersionsNow.contains(mm)) return true;
+                  for (final pv in a.projectVersions) {
+                    if (pv.downloaded && _pvSupportsMm(pv, mm)) return true;
+                  }
+                  return false;
+                }
+                final bool selectedDownloaded = (selectedVersion != null) ? _isVersionDownloaded(selectedVersion!) : false;
+                final bool disableDownload = working || (versionsFull.isNotEmpty ? ((selectedVersion != null) && selectedDownloaded) : (downloadedNow || a.anyDownloaded));
 
                 return SizedBox(
                   width: dialogWidth,
@@ -123,7 +139,7 @@ Future<void> showFabAssetOverlayDialog({
                                   spacing: 8,
                                   runSpacing: 4,
                                   children: [
-                                    if (a.anyDownloaded || downloadedNow)
+                                    if (((versionsFull.isNotEmpty) && (selectedVersion != null) && selectedDownloaded) || (versionsFull.isEmpty && (a.anyDownloaded || downloadedNow)))
                                       Chip(
                                         label: const Text('Downloaded'),
                                         backgroundColor: Colors.green.withValues(alpha: 0.15),
@@ -260,8 +276,33 @@ Future<void> showFabAssetOverlayDialog({
                             label: Text(a.isCompleteProject ? 'Create Project' : 'Import Asset'),
                           ),
                           const SizedBox(width: 8),
+                          if (versionsFull.isNotEmpty) ...[
+                            SizedBox(
+                              width: 140,
+                              child: InputDecorator(
+                                decoration: const InputDecoration(
+                                  labelText: 'UE Version',
+                                  border: OutlineInputBorder(gapPadding: 0),
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                ),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    value: selectedVersion,
+                                    isDense: true,
+                                    items: versionsFull.map((v) => DropdownMenuItem<String>(
+                                      value: v,
+                                      child: Text(v),
+                                    )).toList(),
+                                    onChanged: (v) => setStateSB(() => selectedVersion = v),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                           OutlinedButton.icon(
-                            onPressed: (working || downloadedNow || a.anyDownloaded)
+                            onPressed: disableDownload
                                 ? null
                                 : () async {
                                     try {
@@ -272,8 +313,18 @@ Future<void> showFabAssetOverlayDialog({
                                         );
                                         return;
                                       }
-                                      // Pick the most suitable artifact/version:
-                                      // Prefer the variant that supports the highest Unreal Engine major.minor (e.g., 5.6)
+                                      // Resolve artifact based on selected UE version (if any), otherwise pick best available.
+                                      String? artifactForVersion(FabAsset asset, String? mm) {
+                                        if (mm == null || mm.isEmpty) return null;
+                                        final token = 'UE_' + mm;
+                                        for (final pv in asset.projectVersions) {
+                                          if (pv.engineVersions.any((ev) => ev.trim() == token)) {
+                                            return pv.artifactId;
+                                          }
+                                        }
+                                        return null;
+                                      }
+
                                       String? pickBestArtifactId(FabAsset asset) {
                                         int scoreMm(String mm) {
                                           final parts = mm.split('.');
@@ -284,17 +335,14 @@ Future<void> showFabAssetOverlayDialog({
                                         String? bestArtifact;
                                         int bestScore = -1;
                                         for (final pv in asset.projectVersions) {
-                                          // Determine this version's highest supported engine mm
                                           int pvBest = -1;
                                           for (final ev in pv.engineVersions) {
-                                            // ev looks like 'UE_5.6' or 'UE_4.27'
                                             final parts = ev.split('_');
                                             if (parts.length > 1) {
                                               final mm = parts[1];
                                               pvBest = pvBest < 0 ? scoreMm(mm) : (pvBest > scoreMm(mm) ? pvBest : scoreMm(mm));
                                             }
                                           }
-                                          // If no engineVersions info, give a neutral low score but keep as fallback
                                           if (pvBest < 0) pvBest = 0;
                                           if (pvBest > bestScore) {
                                             bestScore = pvBest;
@@ -304,7 +352,7 @@ Future<void> showFabAssetOverlayDialog({
                                         return bestArtifact;
                                       }
 
-                                      final artifactId = pickBestArtifactId(a) ?? (a.projectVersions.isNotEmpty ? a.projectVersions.last.artifactId : '');
+                                      final artifactId = artifactForVersion(a, selectedVersion) ?? pickBestArtifactId(a) ?? (a.projectVersions.isNotEmpty ? a.projectVersions.last.artifactId : '');
                                       if (artifactId.isEmpty) {
                                         ScaffoldMessenger.of(context).showSnackBar(
                                           const SnackBar(content: Text('No artifact ID found for this asset')),
@@ -319,6 +367,7 @@ Future<void> showFabAssetOverlayDialog({
                                         assetId: a.assetId,
                                         artifactId: artifactId,
                                         jobId: jobId,
+                                        ueVersion: selectedVersion,
                                       );
                                       // Ensure progress dialog is closed if still open
                                       if (context.mounted) {
@@ -333,8 +382,13 @@ Future<void> showFabAssetOverlayDialog({
                                         SnackBar(content: Text(msg)),
                                       );
                                       if (!wasCancelled) {
-                                        // Mark as downloaded locally and request a list refresh
-                                        setStateSB(() => downloadedNow = true);
+                                        // Mark as downloaded locally for the selected version and request a list refresh
+                                        setStateSB(() {
+                                          downloadedNow = true;
+                                          if (selectedVersion != null && selectedVersion!.isNotEmpty) {
+                                            downloadedVersionsNow.add(selectedVersion!);
+                                          }
+                                        });
                                         onFabListChanged?.call();
                                       }
                                     } catch (e) {
@@ -347,7 +401,7 @@ Future<void> showFabAssetOverlayDialog({
                                     }
                                   },
                             icon: const Icon(Icons.download),
-                            label: const Text('Download'),
+                            label: Text(disableDownload && versionsFull.isNotEmpty ? 'Downloaded' : 'Download'),
                           ),
                           const SizedBox(width: 8),
                           // Open in Browser

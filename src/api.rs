@@ -251,6 +251,7 @@ pub async fn auth_complete(body: web::Json<AuthCompleteRequest>) -> HttpResponse
 pub async fn download_asset(path: web::Path<(String, String, String)>, query: web::Query<HashMap<String, String>>) -> HttpResponse {
     let (namespace, asset_id, artifact_id) = path.into_inner();
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
+    let ue_mm = query.get("ue").cloned();
     utils::emit_event(job_id.as_deref(), "download:start", format!("Starting download {}/{}/{}", namespace, asset_id, artifact_id), Some(0.0), None);
 
     // If already cancelled before we start, exit early
@@ -319,7 +320,12 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                 }
 
                 let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
-                let out_root = utils::default_downloads_dir().join(folder_name);
+                let mut out_root = utils::default_downloads_dir().join(folder_name);
+                if let Some(ref mm) = ue_mm {
+                    if !mm.trim().is_empty() {
+                        out_root = out_root.join(mm.trim());
+                    }
+                }
                 // Progress callback: forward file completion percentage over WS
                 let progress_cb: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
                     let jid = jid.to_string();
@@ -358,27 +364,27 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                                                     }
                                                 }
                                                 if let Some(vers) = asset_obj.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                                                    // If we used a title-based folder, treat all versions as downloaded (matches refresh heuristic)
-                                                    let mark_all_versions = title_folder.is_some();
                                                     for ver in vers.iter_mut() {
-                                                        if mark_all_versions {
+                                                        let art = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                                                        let mut should_mark = false;
+                                                        if art == artifact_id { should_mark = true; found_version = true; }
+                                                        if !should_mark {
+                                                            if let Some(ref mm) = ue_mm {
+                                                                // Mark any version that supports the selected UE major.minor
+                                                                if let Some(ea) = ver.get("engineVersions").and_then(|v| v.as_array()) {
+                                                                    let token = format!("UE_{}", mm);
+                                                                    if ea.iter().any(|e| e.as_str().map_or(false, |s| s.trim() == token)) {
+                                                                        should_mark = true;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        if should_mark {
                                                             if let Some(vobj) = ver.as_object_mut() {
                                                                 if vobj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
                                                                     vobj.insert("downloaded".into(), serde_json::Value::Bool(true));
                                                                     changed = true;
                                                                 }
-                                                            }
-                                                        } else {
-                                                            let art = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
-                                                            if art == artifact_id {
-                                                                found_version = true;
-                                                                if let Some(vobj) = ver.as_object_mut() {
-                                                                    if vobj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                                                        vobj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                                                        changed = true;
-                                                                    }
-                                                                }
-                                                                // Even if only one version downloaded, asset-level should already be true
                                                             }
                                                         }
                                                     }

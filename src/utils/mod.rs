@@ -498,48 +498,66 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
 
             let mut asset_downloaded = false;
             let mut used_title_folder = false;
+            let mut version_folders: Vec<String> = Vec::new();
 
             if !title.is_empty() {
                 let folder = utils::sanitize_title_for_folder(&title);
-                let path = downloads_root.join(folder);
-                if path.exists() && is_download_complete(&path) { asset_downloaded = true; used_title_folder = true; }
-            }
-
-            if !asset_downloaded {
-                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                    for ver in versions.iter_mut() {
-                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
-                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
-                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
-                            let path = downloads_root.join(folder);
-                            if path.exists() && is_download_complete(&path) {
-                                asset_downloaded = true;
-                                if let Some(obj) = ver.as_object_mut() {
-                                    if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                        obj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                        changed = true;
-                                    }
-                                }
-                                break;
-                            } else {
-                                if let Some(obj) = ver.as_object_mut() {
-                                    if obj.get("downloaded").is_none() || obj.get("downloaded").and_then(|v| v.as_bool()).unwrap_or(true) {
-                                        obj.insert("downloaded".into(), serde_json::Value::Bool(false));
-                                        changed = true;
+                let path = downloads_root.join(&folder);
+                if path.exists() {
+                    // Legacy: direct download into title folder
+                    if is_download_complete(&path) { asset_downloaded = true; used_title_folder = true; }
+                    // New: versioned subfolders under title
+                    if let Ok(entries) = fs::read_dir(&path) {
+                        for e in entries.flatten() {
+                            let p = e.path();
+                            if p.is_dir() {
+                                // folder name should be UE major.minor like 5.6 or 4.27
+                                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                                    let mm = name.trim();
+                                    if !mm.is_empty() && is_download_complete(&p) {
+                                        version_folders.push(mm.to_string());
+                                        asset_downloaded = true;
                                     }
                                 }
                             }
                         }
                     }
                 }
-            } else {
-                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                    for ver in versions.iter_mut() {
-                        if let Some(obj) = ver.as_object_mut() {
-                            if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                obj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                changed = true;
+            }
+
+            // Annotate per-version flags based on artifactId-based folders OR version subfolders
+            if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                for ver in versions.iter_mut() {
+                    let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut ver_downloaded = false;
+
+                    // Check artifactId-based folder
+                    if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
+                        let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
+                        let path = downloads_root.join(folder);
+                        if path.exists() && is_download_complete(&path) {
+                            ver_downloaded = true;
+                        }
+                    }
+                    // Check versioned title subfolders against engineVersions
+                    if !ver_downloaded && !version_folders.is_empty() {
+                        if let Some(ev) = ver.get("engineVersions").and_then(|v| v.as_array()) {
+                            'outer: for mm in version_folders.iter() {
+                                let token = format!("UE_{}", mm);
+                                for e in ev.iter() {
+                                    if e.as_str().map_or(false, |s| s.trim() == token) {
+                                        ver_downloaded = true; break 'outer;
+                                    }
+                                }
                             }
+                        }
+                    }
+
+                    if let Some(obj) = ver.as_object_mut() {
+                        let prev = obj.get("downloaded").and_then(|v| v.as_bool());
+                        if prev != Some(ver_downloaded) {
+                            obj.insert("downloaded".into(), serde_json::Value::Bool(ver_downloaded));
+                            changed = true;
                         }
                     }
                 }
@@ -553,7 +571,7 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
                 }
             }
 
-            // If title folder was used, ensure asset-level true and versions true already handled
+            // No blanket marking of versions when using title folder; handled above via subfolders or legacy
             if used_title_folder {
                 // nothing extra
             }
