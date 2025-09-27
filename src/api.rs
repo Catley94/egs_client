@@ -252,7 +252,6 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
     let (namespace, asset_id, artifact_id) = path.into_inner();
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
     let ue_mm = query.get("ue").cloned();
-    utils::emit_event(job_id.as_deref(), "download:start", format!("Starting download {}/{}/{}", namespace, asset_id, artifact_id), Some(0.0), None);
 
     // If already cancelled before we start, exit early
     if utils::is_cancelled(job_id.as_deref()) {
@@ -268,6 +267,22 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
         let _ = epic.login().await;
         let _ = utils::save_user_details(&epic.user_details());
     }
+
+    // Emit start event with a user-friendly asset title if available.
+    let mut display_name = format!("{}/{}/{}", namespace, asset_id, artifact_id);
+    if let Some(details) = utils::get_account_details(&mut epic).await {
+        if let Some(lib) = utils::get_fab_library_items(&mut epic, details).await {
+            if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
+                if asset.project_versions.iter().any(|v| v.artifact_id == artifact_id) {
+                    let t = asset.title.trim();
+                    if !t.is_empty() {
+                        display_name = t.to_string();
+                    }
+                }
+            }
+        }
+    }
+    utils::emit_event(job_id.as_deref(), "download:start", format!("Starting download {}", display_name), Some(0.0), None);
 
     // Fetch manifest for the specified asset/artifact
     let manifest_res = epic.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
