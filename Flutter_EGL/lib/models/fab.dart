@@ -73,6 +73,7 @@ class FabAsset {
   final String distributionMethod; // e.g., COMPLETE_PROJECT, ASSET_PACK
   final List<FabImageRef> images;
   final List<FabProjectVersion> projectVersions;
+  final List<String> downloadedVersions; // e.g., ["5.6", "5.5"]
 
   FabAsset({
     required this.title,
@@ -84,9 +85,10 @@ class FabAsset {
     required this.distributionMethod,
     required this.images,
     required this.projectVersions,
+    required this.downloadedVersions,
   });
 
-  bool get anyDownloaded => projectVersions.any((v) => v.downloaded);
+  bool get anyDownloaded => projectVersions.any((v) => v.downloaded) || downloadedVersions.isNotEmpty;
 
   factory FabAsset.fromJson(Map<String, dynamic> json) {
     return FabAsset(
@@ -99,6 +101,7 @@ class FabAsset {
       distributionMethod: json['distributionMethod']?.toString() ?? '',
       images: (json['images'] as List<dynamic>? ?? []).map((e) => FabImageRef.fromJson(e as Map<String, dynamic>)).toList(),
       projectVersions: (json['projectVersions'] as List<dynamic>? ?? []).map((e) => FabProjectVersion.fromJson(e as Map<String, dynamic>)).toList(),
+      downloadedVersions: (json['downloadedVersions'] as List<dynamic>? ?? []).map((e) => e.toString()).toList(),
     );
   }
 

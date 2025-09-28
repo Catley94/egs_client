@@ -24,7 +24,16 @@ pub struct OpenEngineResponse {
 #[derive(serde::Deserialize)]
 pub struct ImportAssetRequest {
     /// Asset folder name as stored under downloads/ (e.g., "Industry Props Pack 6").
+    /// If namespace/asset_id/artifact_id are provided, this can be ignored; the server
+    /// will derive the actual download folder name from Fab metadata.
     pub asset_name: String,
+    /// Optional Fab identifiers to trigger a download prior to import.
+    /// When provided, the server will reuse the same logic as /download-asset.
+    pub namespace: Option<String>,
+    pub asset_id: Option<String>,
+    pub artifact_id: Option<String>,
+    /// Optional Unreal Engine major.minor version subfolder (e.g., "5.4").
+    pub ue: Option<String>,
     /// Project identifier: name, project directory, or path to .uproject
     pub project: String,
     /// Optional subfolder inside Project/Content to copy into (e.g., "Imported/Industry").

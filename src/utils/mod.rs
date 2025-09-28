@@ -557,22 +557,11 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
                 }
             }
 
-            // Annotate per-version flags based on artifactId-based folders OR version subfolders
+            // Annotate per-version flags based ONLY on versioned title subfolders to avoid over-marking.
             if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
                 for ver in versions.iter_mut() {
-                    let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
                     let mut ver_downloaded = false;
-
-                    // Check artifactId-based folder
-                    if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
-                        let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
-                        let path = downloads_root.join(folder);
-                        if path.exists() && is_download_complete(&path) {
-                            ver_downloaded = true;
-                        }
-                    }
-                    // Check versioned title subfolders against engineVersions
-                    if !ver_downloaded && !version_folders.is_empty() {
+                    if !version_folders.is_empty() {
                         if let Some(ev) = ver.get("engineVersions").and_then(|v| v.as_array()) {
                             'outer: for mm in version_folders.iter() {
                                 let token = format!("UE_{}", mm);
@@ -584,7 +573,6 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
                             }
                         }
                     }
-
                     if let Some(obj) = ver.as_object_mut() {
                         let prev = obj.get("downloaded").and_then(|v| v.as_bool());
                         if prev != Some(ver_downloaded) {
@@ -595,18 +583,28 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
                 }
             }
 
-            if asset_downloaded { marked_downloaded += 1; }
+            // Record the exact downloaded UE versions at the asset root for precise UI logic
             if let Some(obj) = asset.as_object_mut() {
+                // Set asset-level downloaded flag
                 if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(asset_downloaded) {
                     obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded));
                     changed = true;
                 }
+                // Inject/update downloadedVersions array (sorted unique)
+                let mut versions_unique = version_folders.clone();
+                versions_unique.sort();
+                versions_unique.dedup();
+                let new_val = serde_json::Value::Array(versions_unique.into_iter().map(serde_json::Value::String).collect());
+                let prev = obj.get("downloadedVersions").cloned();
+                if prev.as_ref() != Some(&new_val) {
+                    obj.insert("downloadedVersions".into(), new_val);
+                    changed = true;
+                }
             }
 
-            // No blanket marking of versions when using title folder; handled above via subfolders or legacy
-            if used_title_folder {
-                // nothing extra
-            }
+            if asset_downloaded { marked_downloaded += 1; }
+
+            // No blanket marking of versions when using title folder; handled above via subfolders
         }
     }
 
@@ -1165,63 +1163,8 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
                         }
                     };
 
-                    // Compute 'downloaded' flags by checking the downloads/ directory for expected folders.
-                    let downloads_root = utils::default_downloads_dir();
-                    let mut total_assets = 0usize;
-                    let mut marked_downloaded = 0usize;
-
-                    if let Some(results) = value.get_mut("results").and_then(|v| v.as_array_mut()) {
-                        for asset in results.iter_mut() {
-                            total_assets += 1;
-                            let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-                            let mut asset_downloaded = false;
-
-                            // Title-based folder (preferred by downloader)
-                            if !title.is_empty() {
-                                let folder = utils::sanitize_title_for_folder(&title);
-                                let path = downloads_root.join(folder);
-                                if path.exists() { asset_downloaded = true; }
-                            }
-
-                            // Fallback: version-specific folders using namespace-assetId-artifactId
-                            if !asset_downloaded {
-                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                                    for ver in versions.iter_mut() {
-                                        let artifact_id = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !namespace.is_empty() && !asset_id.is_empty() && !artifact_id.is_empty() {
-                                            let folder = format!("{}-{}-{}", namespace, asset_id, artifact_id);
-                                            let path = downloads_root.join(folder);
-                                            if path.exists() {
-                                                asset_downloaded = true;
-                                                // Also annotate the version itself for finer UI, if desired.
-                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
-                                                break;
-                                            } else {
-                                                // Mark as false for explicitness (optional)
-                                                ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(false)); });
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Title folder exists: mark all versions as downloaded=true as a heuristic
-                                if let Some(versions) = asset.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                                    for ver in versions.iter_mut() {
-                                        ver.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(true)); });
-                                    }
-                                }
-                            }
-
-                            if asset_downloaded { marked_downloaded += 1; }
-                            // Set the asset-level flag
-                            asset.as_object_mut().map(|obj| { obj.insert("downloaded".into(), serde_json::Value::Bool(asset_downloaded)); });
-                        }
-                    }
-
-                    println!("Annotated {} of {} assets as downloaded based on 'downloads/' folder.", marked_downloaded, total_assets);
+                    // Compute 'downloaded' flags (asset-level and per-version) using filesystem state.
+                    let (_total_assets, _marked, _changed) = annotate_downloaded_flags(&mut value);
 
                     // Save enriched JSON to cache for faster subsequent loads and offline-friendly UI.
                     if let Ok(json_bytes) = serde_json::to_vec_pretty(&value) {

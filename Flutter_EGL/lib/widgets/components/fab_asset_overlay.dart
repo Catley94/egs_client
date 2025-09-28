@@ -24,11 +24,11 @@ Future<void> showFabAssetOverlayDialog({
   VoidCallback? onProjectsChanged,
   VoidCallback? onFabListChanged,
 }) async {
-  final a = asset;
-  final images = a.images;
+  final _asset = asset;
+  final images = _asset.images;
   int index = 0;
   bool working = false;
-  bool downloadedNow = a.anyDownloaded;
+  bool downloadedNow = _asset.anyDownloaded;
   String? selectedVersion; // e.g., '5.6'
   final Set<String> downloadedVersionsNow = <String>{};
   // Use a root-level context for SnackBars to avoid using a possibly deactivated dialog context across awaits
@@ -43,18 +43,18 @@ Future<void> showFabAssetOverlayDialog({
           return AlertDialog(
             contentPadding: const EdgeInsets.all(12),
             // TODO: Currently the title is explicitly being used to move the app around
-            title: Text(a.title.isNotEmpty ? a.title : a.assetId),
+            title: Text(_asset.title.isNotEmpty ? _asset.title : _asset.assetId),
             content: Builder(
               builder: (context) {
                 final size = MediaQuery.of(context).size;
                 final dialogWidth = (size.width * 0.9).clamp(300.0, 900.0);
                 final dialogHeight = (size.height * 0.9).clamp(300.0, 700.0);
                 // Compose extra meta
-                String dist = a.distributionMethod.isNotEmpty ? a.distributionMethod : '';
-                String idNs = '${a.assetNamespace}/${a.assetId}';
+                String dist = _asset.distributionMethod.isNotEmpty ? _asset.distributionMethod : '';
+                String idNs = '${_asset.assetNamespace}/${_asset.assetId}';
                 // Compute full list of supported UE versions
                 final engines = <String>{};
-                for (final projectVersion in a.projectVersions) {
+                for (final projectVersion in _asset.projectVersions) {
                   for (final ev in projectVersion.engineVersions) {
                     final parts = ev.split('_');
                     if (parts.length > 1) engines.add(parts[1]);
@@ -74,16 +74,47 @@ Future<void> showFabAssetOverlayDialog({
                 // Initialize default selected version to latest if not set
                 selectedVersion ??= versionsFull.isNotEmpty ? versionsFull.first : null;
 
+                // Seed in-memory set with versions reported by backend (once)
+                if (downloadedVersionsNow.isEmpty) {
+                  downloadedVersionsNow.addAll(_asset.downloadedVersions);
+                }
+
                 bool _pvSupportsMm(FabProjectVersion pv, String mm) => pv.engineVersions.any((ev) => ev.trim() == 'UE_' + mm);
-                bool _isVersionDownloaded(String mm) {
-                  if (downloadedVersionsNow.contains(mm)) return true;
-                  for (final pv in a.projectVersions) {
-                    if (pv.downloaded && _pvSupportsMm(pv, mm)) return true;
+                bool _isVersionDownloaded(String majorMinor) {
+                  // print("Downloaded versions: $downloadedVersionsNow");
+                  // print("Major Minor: $majorMinor");
+                  if (downloadedVersionsNow.contains(majorMinor)) {
+                    print("downloadedVersionsNow: $downloadedVersionsNow");
+                    print("Major Minor: $majorMinor");
+                    print("Contains version");
+                    return true;
                   }
+
+                  // for (final _version in _asset.downloadedVersions) {
+                  //   print("_version: $_version");
+                  //   print("Major Minor: $majorMinor");
+                  //   if (_version.trim().contains(majorMinor)) {
+                  //     print("_version matches!");
+                  //     return true;
+                  //   }
+                  // }
+
+                  // for (final pv in _asset.projectVersions) {
+                  //   if (pv.downloaded && _pvSupportsMm(pv, majorMinor)) {
+                  //     print("_________________________________________________");
+                  //     print("Foreach project version in projectVersions");
+                  //     print("Major Minor: $majorMinor");
+                  //     print("Project version downloaded: ${pv.downloaded}");
+                  //     print("&&");
+                  //     print("Project Version Supports Major Minor: ${_pvSupportsMm(pv, majorMinor)}");
+                  //     print("_________________________________________________");
+                  //     return true;
+                  //   }
+                  // }
                   return false;
                 }
                 final bool selectedDownloaded = (selectedVersion != null) ? _isVersionDownloaded(selectedVersion!) : false;
-                final bool disableDownload = working || (versionsFull.isNotEmpty ? ((selectedVersion != null) && selectedDownloaded) : (downloadedNow || a.anyDownloaded));
+                final bool disableDownload = working || (versionsFull.isNotEmpty ? ((selectedVersion != null) && selectedDownloaded) : (downloadedNow || _asset.anyDownloaded));
 
                 return SizedBox(
                   width: dialogWidth,
@@ -135,13 +166,13 @@ Future<void> showFabAssetOverlayDialog({
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(a.title.isNotEmpty ? a.title : a.assetId, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                                Text(_asset.title.isNotEmpty ? _asset.title : _asset.assetId, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                                 const SizedBox(height: 6),
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 4,
                                   children: [
-                                    if (((versionsFull.isNotEmpty) && (selectedVersion != null) && selectedDownloaded) || (versionsFull.isEmpty && (a.anyDownloaded || downloadedNow)))
+                                    if (((versionsFull.isNotEmpty) && (selectedVersion != null) && selectedDownloaded) || (versionsFull.isEmpty && (_asset.anyDownloaded || downloadedNow)))
                                       Chip(
                                         label: const Text('Downloaded'),
                                         backgroundColor: Colors.green.withValues(alpha: 0.15),
@@ -153,9 +184,9 @@ Future<void> showFabAssetOverlayDialog({
                                     //     backgroundColor: Colors.blue.withOpacity(0.12),
                                     //     side: BorderSide(color: Colors.blue.shade700),
                                     //   ),
-                                    if (a.sizeLabel.isNotEmpty)
+                                    if (_asset.sizeLabel.isNotEmpty)
                                       Chip(
-                                        label: Text(a.sizeLabel),
+                                        label: Text(_asset.sizeLabel),
                                         backgroundColor: colorScheme.surfaceContainerHighest,
                                         side: BorderSide(color: colorScheme.outlineVariant),
                                       ),
@@ -167,11 +198,11 @@ Future<void> showFabAssetOverlayDialog({
                         ],
                       ),
                       const SizedBox(height: 8),
-                      if (a.description.isNotEmpty)
+                      if (_asset.description.isNotEmpty)
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Text(
-                            a.description,
+                            _asset.description,
                             style: Theme.of(context).textTheme.bodyMedium,
                             softWrap: true,
                             maxLines: 6,
@@ -206,8 +237,8 @@ Future<void> showFabAssetOverlayDialog({
                                 : () async {
                                     try {
                                       setStateSB(() => working = true);
-                                      if (a.isCompleteProject) {
-                                        final params = await promptCreateProject(context, a);
+                                      if (_asset.isCompleteProject) {
+                                        final params = await promptCreateProject(context, _asset);
                                         if (params == null) return;
                                         final jobId = makeJobId();
                                         final dlg = showJobProgressDialog(jobId: jobId, title: 'Creating project...');
@@ -238,16 +269,59 @@ Future<void> showFabAssetOverlayDialog({
                                         }
                                       } else {
                                         // Import Asset
-                                        final params = await promptImport(context, a);
+                                        final params = await promptImport(context, _asset);
                                         if (params == null) return;
                                         final jobId = makeJobId();
                                         final dlg = showJobProgressDialog(jobId: jobId, title: 'Importing asset...');
+                                        // Determine best artifact for selected UE version to align import with download folder naming
+                                        String? _artifactForVersion(FabAsset asset, String? mm) {
+                                          if (mm == null || mm.isEmpty) return null;
+                                          final token = 'UE_' + mm;
+                                          for (final pv in asset.projectVersions) {
+                                            if (pv.engineVersions.any((ev) => ev.trim() == token)) {
+                                              return pv.artifactId;
+                                            }
+                                          }
+                                          return null;
+                                        }
+                                        String? _pickBestArtifactId(FabAsset asset) {
+                                          int scoreMm(String mm) {
+                                            final parts = mm.split('.');
+                                            final maj = int.tryParse(parts.isNotEmpty ? parts[0] : '0') ?? 0;
+                                            final min = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+                                            return maj * 100 + min;
+                                          }
+                                          String? bestArtifact;
+                                          int bestScore = -1;
+                                          for (final pv in asset.projectVersions) {
+                                            int pvBest = -1;
+                                            for (final ev in pv.engineVersions) {
+                                              final parts = ev.split('_');
+                                              if (parts.length > 1) {
+                                                final mm = parts[1];
+                                                final sc = scoreMm(mm);
+                                                pvBest = pvBest < 0 ? sc : (pvBest > sc ? pvBest : sc);
+                                              }
+                                            }
+                                            if (pvBest < 0) pvBest = 0;
+                                            if (pvBest > bestScore) {
+                                              bestScore = pvBest;
+                                              bestArtifact = pv.artifactId.isNotEmpty ? pv.artifactId : bestArtifact;
+                                            }
+                                          }
+                                          return bestArtifact;
+                                        }
+                                        final computedArtifactId = _artifactForVersion(_asset, selectedVersion) ?? _pickBestArtifactId(_asset) ?? (_asset.projectVersions.isNotEmpty ? _asset.projectVersions.last.artifactId : '');
                                         final result = await api.importAsset(
-                                          assetName: a.title.isNotEmpty ? a.title : a.assetId,
+                                          assetName: _asset.title.isNotEmpty ? _asset.title : _asset.assetId,
                                           project: params.project,
                                           targetSubdir: params.targetSubdir.isEmpty ? null : params.targetSubdir,
                                           overwrite: params.overwrite,
                                           jobId: jobId,
+                                          namespace: _asset.assetNamespace,
+                                          assetId: _asset.assetId,
+                                          artifactId: computedArtifactId.isEmpty ? null : computedArtifactId,
+                                          ue: (selectedVersion != null && selectedVersion!.isNotEmpty) ? selectedVersion : null,
                                         );
                                         if (context.mounted) {
                                           final nav = Navigator.of(context, rootNavigator: true);
@@ -275,8 +349,8 @@ Future<void> showFabAssetOverlayDialog({
                                   },
                             icon: working
                                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                                : Icon(a.isCompleteProject ? Icons.add : Icons.download),
-                            label: Text(a.isCompleteProject ? 'Create Project' : 'Import Asset'),
+                                : Icon(_asset.isCompleteProject ? Icons.add : Icons.download),
+                            label: Text(_asset.isCompleteProject ? 'Create Project' : 'Import Asset'),
                           ),
                           const SizedBox(width: 8),
                           if (versionsFull.isNotEmpty) ...[
@@ -322,7 +396,7 @@ Future<void> showFabAssetOverlayDialog({
                                     bool overlayClosed = false;
                                     try {
                                       setStateSB(() => working = true);
-                                      if (a.projectVersions.isEmpty) {
+                                      if (_asset.projectVersions.isEmpty) {
                                         ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                           const SnackBar(content: Text('No versions available to download')),
                                         );
@@ -367,7 +441,7 @@ Future<void> showFabAssetOverlayDialog({
                                         return bestArtifact;
                                       }
 
-                                      final artifactId = artifactForVersion(a, selectedVersion) ?? pickBestArtifactId(a) ?? (a.projectVersions.isNotEmpty ? a.projectVersions.last.artifactId : '');
+                                      final artifactId = artifactForVersion(_asset, selectedVersion) ?? pickBestArtifactId(_asset) ?? (_asset.projectVersions.isNotEmpty ? _asset.projectVersions.last.artifactId : '');
                                       if (artifactId.isEmpty) {
                                         ScaffoldMessenger.of(rootScaffoldCtx).showSnackBar(
                                           const SnackBar(content: Text('No artifact ID found for this asset')),
@@ -382,8 +456,8 @@ Future<void> showFabAssetOverlayDialog({
                                       final jobId = makeJobId();
                                       final dlg = showJobProgressDialog(jobId: jobId, title: 'Downloading asset...');
                                       final res = await api.downloadAsset(
-                                        namespace: a.assetNamespace,
-                                        assetId: a.assetId,
+                                        namespace: _asset.assetNamespace,
+                                        assetId: _asset.assetId,
                                         artifactId: artifactId,
                                         jobId: jobId,
                                         ueVersion: selectedVersion,
@@ -432,9 +506,9 @@ Future<void> showFabAssetOverlayDialog({
                             onPressed: working ? null : () async {
                               setStateSB(() => working = true);
                               try {
-                                final url = (a.url != null && a.url!.isNotEmpty)
-                                    ? a.url!
-                                    : 'https://www.fab.com/listings/${a.assetId}';
+                                final url = (_asset.url != null && _asset.url!.isNotEmpty)
+                                    ? _asset.url!
+                                    : 'https://www.fab.com/listings/${_asset.assetId}';
                                 await launchExternal(url);
                               } finally {
                                 setStateSB(() => working = false);
@@ -452,7 +526,7 @@ Future<void> showFabAssetOverlayDialog({
                                 try {
                                   setStateSB(() => working = true);
                                   // Refreshes the whole list currently
-                                  final result = await api.refreshFabAsset(assetNamespace: a.assetNamespace, assetId: a.assetId);
+                                  final result = await api.refreshFabAsset(assetNamespace: _asset.assetNamespace, assetId: _asset.assetId);
                                   if (!context.mounted) return;
                                   final ok = result.success;
                                   if (ok) downloadedNow = result.anyDownloaded;

@@ -414,6 +414,16 @@ fn update_fab_cache_json(namespace: String, asset_id: String, artifact_id: Strin
                                     obj.insert("downloaded".into(), serde_json::Value::Bool(true));
                                     changed = true;
                                 }
+                                // Append to downloadedVersions array if ue major.minor known
+                                if let Some(ref mm) = ue_major_minor_version {
+                                    let dv = obj.entry("downloadedVersions").or_insert(serde_json::Value::Array(Vec::new()));
+                                    if let serde_json::Value::Array(arr) = dv {
+                                        if !arr.iter().any(|v| v.as_str() == Some(mm)) {
+                                            arr.push(serde_json::Value::String(mm.clone()));
+                                            changed = true;
+                                        }
+                                    }
+                                }
                             }
                             if let Some(vers) = asset_obj.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
                                 for ver in vers.iter_mut() {
@@ -838,11 +848,6 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
     let req = body.into_inner();
     let job_id = req.job_id.clone();
     utils::emit_event(job_id.as_deref(), "import:start", format!("Importing '{}'", req.asset_name), Some(0.0), None);
-    // Resolve source: downloads/<asset_name>/data/Content (asset must be pre-downloaded; no download here)
-    let safe_name = req.asset_name.trim();
-    if safe_name.is_empty() {
-        return HttpResponse::BadRequest().body("asset_name is required");
-    }
 
     // Determine downloads base (same logic as create_unreal_project)
     let mut downloads_base = PathBuf::from("downloads");
@@ -855,29 +860,102 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
         }
     }
 
-    // Try exact and case-insensitive match
-    let mut asset_dir = downloads_base.join(safe_name);
-    if !asset_dir.exists() {
-        if downloads_base.is_dir() {
-            if let Ok(entries) = fs::read_dir(&downloads_base) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                            if fname.eq_ignore_ascii_case(safe_name) { asset_dir = p; break; }
+    // If Fab identifiers are provided, run the exact same download process first
+    if let (Some(namespace), Some(asset_id), Some(artifact_id)) = (req.namespace.clone(), req.asset_id.clone(), req.artifact_id.clone()) {
+        // Forward jobId and ue parameters to the download handler
+        let mut q: HashMap<String, String> = HashMap::new();
+        if let Some(ref j) = job_id { q.insert("jobId".to_string(), j.clone()); }
+        if let Some(ref ue) = req.ue { if !ue.trim().is_empty() { q.insert("ue".to_string(), ue.trim().to_string()); } }
+
+        let path = web::Path::from((namespace.clone(), asset_id.clone(), artifact_id.clone()));
+        let query: Query<HashMap<String, String>> = web::Query(q);
+        match download_asset_handler(path, query).await {
+            // Success/cancel paths in handler return Err(HttpResponse), inspect status
+            Err(resp) => {
+                if !resp.status().is_success() {
+                    // Bubble up download error
+                    return resp;
+                }
+                // If the job was cancelled, don't proceed to import
+                if utils::is_cancelled(job_id.as_deref()) {
+                    if let Some(ref j) = job_id { utils::clear_cancel(j); }
+                    return HttpResponse::Ok().body("cancelled");
+                }
+                // Otherwise continue to import using the folder naming used by the downloader
+                // Compute the folder name the same way as download_asset_handler
+                let mut epic_services = utils::create_epic_games_services();
+                if !utils::try_cached_login(&mut epic_services).await {
+                    epic_authenticate(&mut epic_services).await;
+                }
+                let friendly = get_friendly_asset_name(&namespace, &asset_id, &artifact_id, &mut epic_services).await;
+                let title_folder = get_friendly_folder_name(friendly);
+                let mut computed_asset_dir = downloads_base.join(title_folder.unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id)));
+                if let Some(ref ue) = req.ue { if !ue.trim().is_empty() { computed_asset_dir = computed_asset_dir.join(ue.trim()); } }
+                // Prefer computed dir; if missing, fallback to provided asset_name resolution below
+                // by storing this path for later if it exists
+                if computed_asset_dir.exists() {
+                    // Use this computed dir by setting a marker variable via shadowing later
+                    // We'll pass through to common import logic using this path
+                    // To do so, stash it in a mutable Option and use if present
+                    // We'll proceed after the general preflight below
+                    // Place into a thread-local compatible variable scope
+                    // Continue to common path with computed_asset_dir
+                    // To avoid duplication, jump to final copy section after preparing dest
+                    // But for clarity, we'll fall through and let the preflight use this path
+                }
+            }
+            // Handler returns Ok(HttpResponse) only on fatal failure paths (e.g., all dist points failed)
+            Ok(resp) => {
+                return resp;
+            }
+        }
+    }
+
+    // Resolve source: downloads/<asset_name>/data/Content, with smarter discovery:
+    // 1) If Fab IDs were provided, try the computed folder name first (title or namespace-asset-artifact)
+    // 2) Otherwise, use the provided asset_name with case-insensitive match
+    let safe_name = req.asset_name.trim();
+    if safe_name.is_empty() {
+        return HttpResponse::BadRequest().body("asset_name is required");
+    }
+
+    let mut asset_dir: PathBuf;
+    if let (Some(namespace), Some(asset_id), Some(artifact_id)) = (req.namespace.clone(), req.asset_id.clone(), req.artifact_id.clone()) {
+        // Recompute expected folder name like the downloader
+        let mut epic_services = utils::create_epic_games_services();
+        if !utils::try_cached_login(&mut epic_services).await {
+            epic_authenticate(&mut epic_services).await;
+        }
+        let friendly = get_friendly_asset_name(&namespace, &asset_id, &artifact_id, &mut epic_services).await;
+        let title_folder = get_friendly_folder_name(friendly);
+        let mut computed = downloads_base.join(title_folder.unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id)));
+        if let Some(ref ue) = req.ue { if !ue.trim().is_empty() { computed = computed.join(ue.trim()); } }
+        asset_dir = computed;
+    } else {
+        asset_dir = downloads_base.join(safe_name);
+        if !asset_dir.exists() {
+            if downloads_base.is_dir() {
+                if let Ok(entries) = fs::read_dir(&downloads_base) {
+                    for e in entries.flatten() {
+                        let p = e.path();
+                        if p.is_dir() {
+                            if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                                if fname.eq_ignore_ascii_case(safe_name) { asset_dir = p; break; }
+                            }
                         }
                     }
                 }
             }
         }
     }
-    // Require that the asset already exists locally (no implicit download here)
+
+    // Require that the asset exists locally now
     if !asset_dir.exists() {
-        return HttpResponse::NotFound().body(format!("Asset '{}' not found under downloads/ (looked in {})", safe_name, downloads_base.display()));
+        return HttpResponse::NotFound().body(format!("Asset folder not found under downloads (looked in {})", downloads_base.display()));
     }
     // If a completion marker is used by downloads, ensure it's complete as well
     if !utils::is_download_complete(&asset_dir) {
-        return HttpResponse::NotFound().body(format!("Asset '{}' is not fully downloaded. Please download it first via /download-asset.", safe_name));
+        return HttpResponse::NotFound().body("Asset is not fully downloaded. Please download it first via /download-asset.");
     }
     let src_content = asset_dir.join("data").join("Content");
     if !src_content.is_dir() {
@@ -891,7 +969,7 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
     };
     let mut dest_content = project_dir.join("Content");
     if let Some(sub) = &req.target_subdir {
-        let trimmed = sub.trim_matches(['/','\\']);
+        let trimmed = sub.trim_matches(['/', '\\']);
         if !trimmed.is_empty() {
             dest_content = dest_content.join(trimmed);
         }
@@ -902,10 +980,10 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
     utils::emit_event(job_id.as_deref(), "import:copying", format!("Copying files into {}", dest_content.display()), Some(0.0), None);
     match utils::copy_dir_recursive_with_progress(&src_content, &dest_content, overwrite, job_id.as_deref(), "import:copying") {
         Ok((copied, skipped)) => {
-            utils::emit_event(job_id.as_deref(), "import:complete", format!("Imported '{}'", safe_name), Some(100.0), None);
+            utils::emit_event(job_id.as_deref(), "import:complete", format!("Imported '{}'", req.asset_name.trim()), Some(100.0), None);
             let resp = models::ImportAssetResponse {
                 ok: true,
-                message: format!("Imported '{}' into project at {}", safe_name, project_dir.display()),
+                message: format!("Imported into project at {}", project_dir.display()),
                 files_copied: copied,
                 files_skipped: skipped,
                 source: src_content.to_string_lossy().to_string(),

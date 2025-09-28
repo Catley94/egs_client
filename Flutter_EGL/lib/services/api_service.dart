@@ -315,7 +315,17 @@ class ApiService {
     return OpenProjectResult.fromJson(data);
   }
 
-  Future<ImportAssetResult> importAsset({required String assetName, required String project, String? targetSubdir, bool overwrite = false, String? jobId}) async {
+  Future<ImportAssetResult> importAsset({
+    required String assetName,
+    required String project,
+    String? targetSubdir,
+    bool overwrite = false,
+    String? jobId,
+    String? namespace,
+    String? assetId,
+    String? artifactId,
+    String? ue,
+  }) async {
     final uri = _uri('/import-asset');
     final payload = <String, dynamic>{
       'asset_name': assetName,
@@ -323,6 +333,10 @@ class ApiService {
       if (targetSubdir != null && targetSubdir.isNotEmpty) 'target_subdir': targetSubdir,
       if (overwrite) 'overwrite': true,
       if (jobId != null && jobId.isNotEmpty) 'job_id': jobId,
+      if (namespace != null && namespace.isNotEmpty) 'namespace': namespace,
+      if (assetId != null && assetId.isNotEmpty) 'asset_id': assetId,
+      if (artifactId != null && artifactId.isNotEmpty) 'artifact_id': artifactId,
+      if (ue != null && ue.isNotEmpty) 'ue': ue,
     };
     final res = await http.post(
       uri,
@@ -624,6 +638,7 @@ extension RefreshFabAssetApi on ApiService {
           distributionMethod: '',
           images: const [],
           projectVersions: const [],
+          downloadedVersions: const [],
         ),
       );
       final anyDownloaded = asset.anyDownloaded;
