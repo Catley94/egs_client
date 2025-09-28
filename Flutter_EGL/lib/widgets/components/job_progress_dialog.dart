@@ -24,6 +24,7 @@ Future<void> showJobProgressOverlayDialog({
   String message = 'Starting...';
   String countsText = '';
   String speedText = '';
+  String sizeText = '';
   bool cancelling = false;
   StreamSubscription? sub;
 
@@ -46,6 +47,17 @@ Future<void> showJobProgressOverlayDialog({
     if (bps >= mb) return '${(bps / mb).toStringAsFixed(2)} MB/s';
     if (bps >= kb) return '${(bps / kb).toStringAsFixed(1)} KB/s';
     return '${bps.toStringAsFixed(0)} B/s';
+  }
+
+  String fmtBytes(num bytes) {
+    final b = bytes.toDouble();
+    const kb = 1024.0;
+    const mb = kb * 1024.0;
+    const gb = mb * 1024.0;
+    if (b >= gb) return '${(b / gb).toStringAsFixed(2)} GB';
+    if (b >= mb) return '${(b / mb).toStringAsFixed(2)} MB';
+    if (b >= kb) return '${(b / kb).toStringAsFixed(1)} KB';
+    return '${b.toStringAsFixed(0)} B';
   }
 
   try {
@@ -176,6 +188,15 @@ Future<void> showJobProgressOverlayDialog({
                 speedText = (isDownloading && speedBps0 != null && speedBps0! > 0)
                     ? fmtSpeed(speedBps0!)
                     : '';
+                // Bytes label
+                if (bytesDone != null && bytesTotal != null && bytesTotal > 0) {
+                  final remaining = (bytesTotal - bytesDone).clamp(0, bytesTotal);
+                  sizeText = '${fmtBytes(bytesDone)} / ${fmtBytes(bytesTotal)} (${fmtBytes(remaining)} left)';
+                } else if (bytesDone != null) {
+                  sizeText = fmtBytes(bytesDone);
+                } else {
+                  sizeText = '';
+                }
               });
               // Update OS-level window/taskbar progress if available
               if (effective != null) {
@@ -254,6 +275,10 @@ Future<void> showJobProgressOverlayDialog({
                           if (percent != null) Text('${(percent!.clamp(0.0, 100.0) as double).floor().toString()}%'),
                         ],
                       ),
+                      if (sizeText.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(sizeText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                      ],
                       if (messageToShow != null) ...[
                         const SizedBox(height: 8),
                         Text(messageToShow, maxLines: 2, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall),

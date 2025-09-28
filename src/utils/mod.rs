@@ -292,12 +292,25 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             }
             if skip_existing {
                 // Count these bytes toward total progress
-                let _ = bytes_done.fetch_add(file_total_bytes, Ordering::SeqCst);
+                let cur = bytes_done.fetch_add(file_total_bytes, Ordering::SeqCst) + file_total_bytes;
                 let mut totals_locked = totals.lock().await; totals_locked.up_to_date += 1;
 
                 // Count as completed for overall percent and notify progress
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                 if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
+                // Also emit a detailed progress event so UI can show bytes
+                utils::emit_event(
+                    job_id_owned.as_deref(),
+                    "download:progress",
+                    format!("{} / {}", done, total_files),
+                    Some(((done as f64) / (total_files as f64) * 100.0) as f32),
+                    Some(serde_json::json!({
+                        "downloaded_files": done,
+                        "total_files": total_files,
+                        "bytes_done": cur,
+                        "total_bytes": _total_bytes_all,
+                    })),
+                );
                 return Ok::<(), anyhow::Error>(());
             }
 
@@ -309,6 +322,19 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                 // Treat as completed for overall progress and notify
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                 if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
+                // Emit a detailed progress event even for zero-chunk files
+                utils::emit_event(
+                    job_id_owned.as_deref(),
+                    "download:progress",
+                    format!("{} / {}", done, total_files),
+                    Some(((done as f64) / (total_files as f64) * 100.0) as f32),
+                    Some(serde_json::json!({
+                        "downloaded_files": done,
+                        "total_files": total_files,
+                        "bytes_done": bytes_done.load(std::sync::atomic::Ordering::SeqCst),
+                        "total_bytes": _total_bytes_all,
+                    })),
+                );
                 return Ok(());
             }
 
@@ -471,6 +497,19 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             // Count as completed for overall percent and notify
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
+            // Emit a detailed progress event on file completion as well
+            utils::emit_event(
+                job_id_owned.as_deref(),
+                "download:progress",
+                format!("{} / {}", done, total_files),
+                Some(((done as f64) / (total_files as f64) * 100.0) as f32),
+                Some(serde_json::json!({
+                    "downloaded_files": done,
+                    "total_files": total_files,
+                    "bytes_done": bytes_done.load(std::sync::atomic::Ordering::SeqCst),
+                    "total_bytes": _total_bytes_all,
+                })),
+            );
             Ok(())
         });
     }

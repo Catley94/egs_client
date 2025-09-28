@@ -60,7 +60,7 @@ use serde::{Deserialize};
 use serde_json;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use actix_web::web::Query;
 use actix_web_actors::ws;
 use egs_api::EpicGames;
@@ -957,9 +957,48 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
     if !utils::is_download_complete(&asset_dir) {
         return HttpResponse::NotFound().body("Asset is not fully downloaded. Please download it first via /download-asset.");
     }
-    let src_content = asset_dir.join("data").join("Content");
+    // Locate the source Content folder. Assets may place it at different depths (e.g., data/Content or data/Engine/Plugins/Marketplace/.../content)
+    let data_dir = asset_dir.join("data");
+    let mut src_content = data_dir.join("Content");
     if !src_content.is_dir() {
-        return HttpResponse::NotFound().body(format!("Source Content folder not found: {}", src_content.display()));
+        // Try lowercase variant directly under data/
+        let alt = data_dir.join("content");
+        if alt.is_dir() {
+            src_content = alt;
+        } else {
+            // Search recursively for a folder named Content/content (case-insensitive)
+            let max_depth = 10usize;
+            let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+            queue.push_back((data_dir.clone(), 0));
+            let mut found: Option<PathBuf> = None;
+            let mut found_marketplace: Option<PathBuf> = None;
+            'bfs: while let Some((dir, depth)) = queue.pop_front() {
+                if depth > max_depth { continue; }
+                if let Ok(entries) = fs::read_dir(&dir) {
+                    for ent in entries.flatten() {
+                        let p = ent.path();
+                        if p.is_dir() {
+                            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                                if name.eq_ignore_ascii_case("Content") {
+                                    let lower = p.to_string_lossy().to_lowercase();
+                                    if lower.contains("plugins/marketplace") {
+                                        found_marketplace = Some(p.clone());
+                                        break 'bfs;
+                                    }
+                                    if found.is_none() { found = Some(p.clone()); }
+                                }
+                            }
+                            queue.push_back((p, depth + 1));
+                        }
+                    }
+                }
+            }
+            if let Some(p) = found_marketplace.or(found) {
+                src_content = p;
+            } else {
+                return HttpResponse::NotFound().body(format!("Source Content folder not found under {}", data_dir.display()));
+            }
+        }
     }
 
     // Resolve project directory and destination Content
