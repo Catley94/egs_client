@@ -263,9 +263,13 @@ Future<void> showJobProgressOverlayDialog({
                       const SizedBox(height: 12),
                       Row(
                         children: [
-                          if (countsText.isNotEmpty) ...[
-                            const SizedBox(width: 12),
-                            Expanded(child: Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+                          // if (countsText.isNotEmpty) ...[
+                          //   const SizedBox(width: 12),
+                          //   Expanded(child: Text(countsText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+                          // ],
+                          if (sizeText.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Expanded(child: Text(sizeText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant))),
                           ],
                           if (speedText.isNotEmpty) ...[
                             const SizedBox(width: 8),
@@ -275,10 +279,7 @@ Future<void> showJobProgressOverlayDialog({
                           if (percent != null) Text('${(percent!.clamp(0.0, 100.0) as double).floor().toString()}%'),
                         ],
                       ),
-                      if (sizeText.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Text(sizeText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                      ],
+
                       if (messageToShow != null) ...[
                         const SizedBox(height: 8),
                         Text(messageToShow, maxLines: 2, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall),
