@@ -1036,10 +1036,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
             Ok(ws::Message::Text(_)) => { /* ignore client messages */ },
             Ok(ws::Message::Close(_)) => {
-                println!("[WS] client requested close for job {}", self.job_id);
-                // Treat WebSocket close as a cancellation request for this job so
-                // long-running tasks can stop cooperatively.
-                cancel_job(&self.job_id);
+                println!("[WS] client closed WS for job {} (not treating as cancellation)", self.job_id);
+                // Do not auto-cancel on WS close; user must hit Cancel or call /cancel-job explicitly.
                 ctx.stop();
             },
             _ => {}
