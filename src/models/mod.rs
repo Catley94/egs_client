@@ -136,3 +136,10 @@ pub struct UnrealEnginesResponse {
     pub base_directory: String,
     pub engines: Vec<UnrealEngineInfo>,
 }
+
+#[derive(Default)]
+pub struct Totals {
+    pub downloaded: usize,
+    pub skipped_zero: usize,
+    pub up_to_date: usize
+}

@@ -177,7 +177,7 @@ pub async fn get_fab_library_items(epic_games_services: &mut EpicGames, info: Ac
 /// when no files could be downloaded and none were up-to-date.
 pub type ProgressFn = std::sync::Arc<dyn Fn(u32, String) + Send + Sync + 'static>;
 
-pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &Path, progress: Option<ProgressFn>, job_id_opt: Option<&str>) -> Result<(), anyhow::Error> {
+pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_directory_full_path: &Path, progress_callback: Option<ProgressFn>, job_id_opt: Option<&str>) -> Result<(), anyhow::Error> {
     use egs_api::api::types::chunk::Chunk;
     use sha1::{Digest, Sha1};
     use std::io::{self, Write};
@@ -189,17 +189,28 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     let max_files: usize = std::env::var("EAM_FILE_CONCURRENCY").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(2);
     let max_chunks: usize = std::env::var("EAM_CHUNK_CONCURRENCY").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(4);
 
-    // Create base output dirs
-    std::fs::create_dir_all(out_root)?;
-    let temp_dir = out_root.parent().map(|p| p.join("temp")).unwrap_or_else(|| out_root.join("temp"));
+    // Create asset folder
+    std::fs::create_dir_all(download_directory_full_path)?;
+    // Create temp folder under each asset for chunk downloads
+    let temp_dir = download_directory_full_path.parent().map(|p| p.join("temp")).unwrap_or_else(|| download_directory_full_path.join("temp"));
     std::fs::create_dir_all(&temp_dir)?;
 
     // Clear any stale completion marker when starting/resuming a download
-    let complete_marker = out_root.join(".download_complete");
-    let _ = std::fs::remove_file(&complete_marker);
+    let complete_marker = download_directory_full_path.join(".download_complete");
+    match std::fs::remove_file(&complete_marker) {
+        Ok(_) => {
+            println!("Clearing stale completion marker: {}", complete_marker.display());
+        }
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(anyhow::anyhow!("Failed to clear stale completion marker: {}", e));
+            }
+        }
+    }
 
     let client = reqwest::Client::new();
 
+    // Get list of files to download
     let files: Vec<_> = dm.files().into_iter().collect();
     let total_files = files.len();
     if total_files == 0 {
@@ -210,9 +221,10 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     let total_bytes_all: u64 = files.iter()
         .map(|(_, f)| f.file_chunk_parts.iter().map(|p| p.size as u64).sum::<u64>())
         .sum();
+
     let bytes_done = Arc::new(AtomicU64::new(0));
 
-    // Early cancellation
+    // Check if job has been requested to cancel
     if is_cancelled(job_id_opt) {
         emit_event(job_id_opt, "cancelled", "Cancelled", None, None);
         return Err(anyhow::anyhow!("cancelled"));
@@ -222,9 +234,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     let file_sema = Arc::new(Semaphore::new(max_files));
     let mut join = JoinSet::new();
 
-    #[derive(Default)]
-    struct Totals { downloaded: usize, skipped_zero: usize, up_to_date: usize }
-    let totals = Arc::new(tokio::sync::Mutex::new(Totals::default()));
+    let totals = Arc::new(tokio::sync::Mutex::new(models::Totals::default()));
 
     // Track completed files across concurrent tasks to compute overall percent
     let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -232,7 +242,8 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     // Capture job id for async blocks
     let job_id_owned = job_id_opt.map(|s| s.to_string());
 
-    for (file_idx, (filename, file)) in files.into_iter().enumerate() {
+    for (file_index, (filename, file)) in files.into_iter().enumerate() {
+        // Check if job has been requested to cancel
         if is_cancelled(job_id_opt) {
             emit_event(job_id_opt, "cancelled", "Cancelled", None, None);
             return Err(anyhow::anyhow!("cancelled"));
@@ -240,23 +251,23 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
         let permit_owner = file_sema.clone().acquire_owned().await.expect("semaphore closed");
         let client = client.clone();
         let temp_dir = temp_dir.clone();
-        let out_root = out_root.to_path_buf();
+        let out_directory = download_directory_full_path.to_path_buf();
         let totals = totals.clone();
         let completed = completed.clone();
-        let progress = progress.clone();
+        let progress = progress_callback.clone();
         let job_id_owned = job_id_owned.clone();
         let bytes_done = bytes_done.clone();
-        let total_bytes_all = total_bytes_all;
+        let _total_bytes_all = total_bytes_all;
         join.spawn(async move {
             let _permit = permit_owner; // hold until task end
-            let file_no = file_idx + 1;
+            let file_no = file_index + 1;
             println!("Downloading file {}/{}: {}", file_no, total_files, filename);
             io::stdout().flush().ok();
             // Total bytes for this file (sum of chunk parts)
             let file_total_bytes: u64 = file.file_chunk_parts.iter().map(|p| p.size as u64).sum();
 
             // Prepare final output path under .../data/<filename>
-            let mut out_path = out_root.clone();
+            let mut out_path = out_directory.clone();
             if out_path.file_name().map_or(false, |n| n == "data") == false { out_path = out_path.join("data"); }
             let out_path = out_path.join(&filename);
             if let Some(parent) = out_path.parent() { let _ = std::fs::create_dir_all(parent); }
@@ -282,7 +293,8 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
             if skip_existing {
                 // Count these bytes toward total progress
                 let _ = bytes_done.fetch_add(file_total_bytes, Ordering::SeqCst);
-                let mut t = totals.lock().await; t.up_to_date += 1;
+                let mut totals_locked = totals.lock().await; totals_locked.up_to_date += 1;
+
                 // Count as completed for overall percent and notify progress
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                 if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
@@ -305,7 +317,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
             let mut chunk_join = JoinSet::new();
 
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
-                // Early cancel before starting a chunk
+                // Check if job has been requested to be cancelled
                 if utils::is_cancelled(job_id_owned.as_deref()) {
                     utils::emit_event(job_id_owned.as_deref(), "cancelled", "Cancelled", None, None);
                     break;
@@ -330,21 +342,38 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                         io::stdout().flush().ok();
                         return Ok::<(), anyhow::Error>(());
                     }
+
                     print!("\r  chunks: {}/{} ({}%) - downloading...        ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
                     io::stdout().flush().ok();
+
                     let link = link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
                     let url = link.to_string();
+
                     // Check cancel right before sending
-                    if utils::is_cancelled(job_id_inner.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
+                    if utils::is_cancelled(job_id_inner.as_deref()) {
+                        return Err(anyhow::anyhow!("cancelled"));
+                    }
                     let mut resp = client.get(url.clone()).send().await;
-                    if resp.is_err() { resp = client.get(url.clone()).send().await; }
+                    if resp.is_err() {
+                        resp = client.get(url.clone()).send().await;
+
+                    }
                     let resp = resp.map_err(|e| anyhow::anyhow!("chunk request failed for {}: {}", guid, e))?;
                     let resp = resp.error_for_status().map_err(|e| anyhow::anyhow!("chunk HTTP {} for {}", e.status().unwrap_or_default(), guid))?;
+
                     // Check cancel before reading body
-                    if utils::is_cancelled(job_id_inner.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
+                    if utils::is_cancelled(job_id_inner.as_deref()) {
+                        return Err(anyhow::anyhow!("cancelled"));
+                    }
+
                     use futures_util::StreamExt;
-                    if let Some(parent) = chunk_path.parent() { let _ = std::fs::create_dir_all(parent); }
-                    let mut f = std::fs::File::create(&chunk_path)?;
+
+                    if let Some(parent) = chunk_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+
+                    let mut _file = std::fs::File::create(&chunk_path)?;
+
                     let mut stream = resp.bytes_stream();
                     let mut last_emit = Instant::now();
                     while let Some(next) = stream.next().await {
@@ -352,23 +381,26 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
                             // Leave partial chunk; future runs may reuse/overwrite
                             return Err(anyhow::anyhow!("cancelled"));
                         }
+
                         let bytes = next.map_err(|e| anyhow::anyhow!("read chunk {}: {}", guid, e))?;
-                        std::io::Write::write_all(&mut f, &bytes)?;
+                        std::io::Write::write_all(&mut _file, &bytes)?;
+
                         // Update global bytes_done and emit throttled progress for live speed in UI
                         let cur = bytes_done.fetch_add(bytes.len() as u64, Ordering::SeqCst) + (bytes.len() as u64);
                         if last_emit.elapsed() >= Duration::from_millis(300) {
                             let done_files = completed.load(std::sync::atomic::Ordering::SeqCst);
-                            let pct = if total_bytes_all > 0 { ((cur as f64) / (total_bytes_all as f64) * 100.0) as f32 } else { 0.0 };
+                            let _percentage = if _total_bytes_all > 0 { ((cur as f64) / (_total_bytes_all as f64) * 100.0) as f32 } else { 0.0 };
+
                             utils::emit_event(
                                 job_id_inner.as_deref(),
                                 "download:progress",
                                 format!("{} / {}", done_files, total_files),
-                                Some(pct),
+                                Some(_percentage),
                                 Some(serde_json::json!({
                                     "downloaded_files": done_files,
                                     "total_files": total_files,
                                     "bytes_done": cur,
-                                    "total_bytes": total_bytes_all,
+                                    "total_bytes": _total_bytes_all,
                                 })),
                             );
                             last_emit = Instant::now();
@@ -467,7 +499,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, out_root: &P
     }
 
     // Mark download as complete
-    let _ = std::fs::write(out_root.join(".download_complete"), "ok");
+    let _ = std::fs::write(download_directory_full_path.join(".download_complete"), "ok");
     Ok(())
 }
 

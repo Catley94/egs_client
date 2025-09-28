@@ -56,12 +56,19 @@ class ApiService {
   /// On success returns a message from the backend; progress is streamed via WebSocket using jobId.
   Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId, String? ueVersion}) async {
     final path = '/download-asset/${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(assetId)}/${Uri.encodeComponent(artifactId)}';
-    final qp = <String, String>{};
-    if (jobId != null && jobId.isNotEmpty) qp['jobId'] = jobId;
-    if (ueVersion != null && ueVersion.isNotEmpty) qp['ue'] = ueVersion;
-    final uri = _uri(path, qp.isNotEmpty ? qp : null);
+
+    final query = <String, String>{};
+    // Add jobId for Web Socket information
+    if (jobId != null && jobId.isNotEmpty) query['jobId'] = jobId;
+    if (ueVersion != null && ueVersion.isNotEmpty) query['ue'] = ueVersion;
+
+
+    final uri = _uri(path, query.isNotEmpty ? query : null);
+
     final res = await http.get(uri);
+
     final body = res.body;
+
     if (res.statusCode != 200) {
       // Try to parse JSON {message} if ever returned, else use body
       try {
@@ -72,6 +79,7 @@ class ApiService {
         throw Exception('Download failed: HTTP ${res.statusCode} $body');
       }
     }
+
     // success: server returns plain text "Download complete" or similar
     return DownloadAssetResult(ok: true, message: body.isNotEmpty ? body : 'Download started');
   }

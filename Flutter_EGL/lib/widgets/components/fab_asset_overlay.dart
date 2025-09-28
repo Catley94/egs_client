@@ -237,6 +237,7 @@ Future<void> showFabAssetOverlayDialog({
                                           onFabListChanged?.call();
                                         }
                                       } else {
+                                        // Import Asset
                                         final params = await promptImport(context, a);
                                         if (params == null) return;
                                         final jobId = makeJobId();

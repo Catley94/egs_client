@@ -61,7 +61,9 @@ use serde_json;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::collections::HashMap;
+use actix_web::web::Query;
 use actix_web_actors::ws;
+use egs_api::EpicGames;
 use crate::utils::get_sender;
 
 /// Default directory names used when no config/environment override is provided.
@@ -249,59 +251,61 @@ pub async fn auth_complete(body: web::Json<AuthCompleteRequest>) -> HttpResponse
 /// - curl -v http://localhost:8080/download-asset/89efe5924d3d467c839449ab6ab52e7f/28b7df0e7f5e4202be89a20d362860c3/Industryf4a3f3ff297fV1
 #[get("/download-asset/{namespace}/{asset_id}/{artifact_id}")]
 pub async fn download_asset(path: web::Path<(String, String, String)>, query: web::Query<HashMap<String, String>>) -> HttpResponse {
+    match download_asset_handler(path, query).await {
+        Ok(value) => value,
+        Err(value) => return value,
+    }
+}
+
+async fn download_asset_handler(path: web::Path<(String, String, String)>, query: Query<HashMap<String, String>>) -> Result<HttpResponse, HttpResponse> {
     let (namespace, asset_id, artifact_id) = path.into_inner();
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
-    let ue_mm = query.get("ue").cloned();
+    let ue_major_minor_version = query.get("ue").cloned();
 
     // If already cancelled before we start, exit early
     if utils::is_cancelled(job_id.as_deref()) {
         utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
         if let Some(ref j) = job_id { utils::clear_cancel(j); }
-        return HttpResponse::Ok().body("cancelled");
+        return Err(HttpResponse::Ok().body("cancelled"));
     }
 
-    let mut epic = utils::create_epic_games_services();
-    if !utils::try_cached_login(&mut epic).await {
-        let auth_code = utils::get_auth_code();
-        let _ = epic.auth_code(None, Some(auth_code)).await;
-        let _ = epic.login().await;
-        let _ = utils::save_user_details(&epic.user_details());
+
+    let mut epic_services = utils::create_epic_games_services();
+    if !utils::try_cached_login(&mut epic_services).await {
+        epic_authenticate(&mut epic_services).await;
     }
 
     // Emit start event with a user-friendly asset title if available.
-    let mut display_name = format!("{}/{}/{}", namespace, asset_id, artifact_id);
-    if let Some(details) = utils::get_account_details(&mut epic).await {
-        if let Some(lib) = utils::get_fab_library_items(&mut epic, details).await {
-            if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
-                if asset.project_versions.iter().any(|v| v.artifact_id == artifact_id) {
-                    let t = asset.title.trim();
-                    if !t.is_empty() {
-                        display_name = t.to_string();
-                    }
-                }
-            }
-        }
-    }
-    utils::emit_event(job_id.as_deref(), "download:start", format!("Starting download {}", display_name), Some(0.0), None);
+    let asset_name = get_friendly_asset_name(&namespace, &asset_id, &artifact_id, &mut epic_services).await;
+    utils::emit_event(
+        job_id.as_deref(),
+        "download:start",
+        format!("Starting download {}", asset_name),
+        Some(0.0),
+        None);
 
     // Fetch manifest for the specified asset/artifact
-    let manifest_res = epic.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
+    let manifest_res = epic_services.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
     let manifests = match manifest_res {
         Ok(m) => m,
         Err(e) => {
             utils::emit_event(job_id.as_deref(), "download:error", format!("Failed to fetch manifest: {:?}", e), None, None);
-            return HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e));
+            return Err(HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e)));
         }
     };
 
     for man in manifests.iter() {
+        // Get a download URL
         for url in man.distribution_point_base_urls.iter() {
+            // Check if job has been requested to cancel
             if utils::is_cancelled(job_id.as_deref()) {
+                // If requested to cancel, cancel job
                 utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
                 if let Some(ref j) = job_id { utils::clear_cancel(j); }
-                return HttpResponse::Ok().body("cancelled");
+                return Err(HttpResponse::Ok().body("cancelled"));
             }
-            if let Ok(mut dm) = epic.fab_download_manifest(man.clone(), url).await {
+
+            if let Ok(mut dm) = epic_services.fab_download_manifest(man.clone(), url).await {
                 // Ensure SourceURL present for downloader (some tooling relies on it)
                 use std::collections::HashMap;
                 if let Some(ref mut fields) = dm.custom_fields {
@@ -312,44 +316,48 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                     dm.custom_fields = Some(map);
                 }
 
-                // Resolve a human-friendly title for folder name, if available.
-                let mut title_folder: Option<String> = None;
-                // Try to use the library list to find the matching asset by IDs
-                if let Some(details) = utils::get_account_details(&mut epic).await {
-                    if let Some(lib) = utils::get_fab_library_items(&mut epic, details).await {
-                        if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
-                            // Verify the artifact belongs to this asset's versions
-                            if asset.project_versions.iter().any(|v| v.artifact_id == artifact_id) {
-                                let mut t = asset.title.clone();
-                                // Replace characters illegal on common filesystems.
-                                let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-                                t = t.replace(&illegal[..], "_");
-                                // Also trim leading/trailing spaces and dots (Windows quirk).
-                                let t = t.trim().trim_matches('.').to_string();
-                                if !t.is_empty() {
-                                    title_folder = Some(t);
-                                }
-                            }
-                        }
+                let title_folder = get_friendly_folder_name(asset_name.clone());
+
+
+                // // Try to use the library list to find the matching asset by IDs
+                // if let Some(details) = utils::get_account_details(&mut epic_services).await {
+                //     if let Some(lib) = utils::get_fab_library_items(&mut epic_services, details).await {
+                //         if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
+                //             // Verify the artifact belongs to this asset's versions
+                //             if asset.project_versions.iter().any(|v| v.artifact_id == artifact_id) {
+                //                 let mut t = asset.title.clone();
+                //                 // Replace characters illegal on common filesystems.
+                //                 let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+                //                 t = t.replace(&illegal[..], "_");
+                //                 // Also trim leading/trailing spaces and dots (Windows quirk).
+                //                 let t = t.trim().trim_matches('.').to_string();
+                //                 if !t.is_empty() {
+                //                     title_folder = Some(t);
+                //                 }
+                //             }
+                //         }
+                //     }
+                // }
+
+                let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
+                let mut download_directory_full_path = utils::default_downloads_dir().join(folder_name);
+                if let Some(ref major_minor_version) = ue_major_minor_version {
+                    if !major_minor_version.trim().is_empty() {
+                        // Create folder called specific version of asset
+                        download_directory_full_path = download_directory_full_path.join(major_minor_version.trim());
                     }
                 }
 
-                let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
-                let mut out_root = utils::default_downloads_dir().join(folder_name);
-                if let Some(ref mm) = ue_mm {
-                    if !mm.trim().is_empty() {
-                        out_root = out_root.join(mm.trim());
-                    }
-                }
                 // Progress callback: forward file completion percentage over WS
-                let progress_cb: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
+                let progress_callback: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
                     let jid = jid.to_string();
-                    let f: utils::ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
-                        utils::emit_event(Some(&jid), "download:progress", format!("{}", msg), Some(pct as f32), None);
+                    let f: utils::ProgressFn = std::sync::Arc::new(move |percentage_complete: u32, msg: String| {
+                        utils::emit_event(Some(&jid), "download:progress", format!("{}", msg), Some(percentage_complete as f32), None);
                     });
                     f
                 });
-                match utils::download_asset(&dm, url.as_str(), &out_root, progress_cb, job_id.as_deref()).await {
+
+                match utils::download_asset(&dm, url.as_str(), &download_directory_full_path, progress_callback, job_id.as_deref()).await {
                     Ok(_) => {
                         println!("Download complete");
 
@@ -357,94 +365,21 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
                         // to mark this asset and specific version as downloaded, so the UI can
                         // reflect the state without requiring a full refresh.
                         let cache_path = utils::fab_cache_file();
-                        if let Ok(mut f) = fs::File::open(&cache_path) {
-                            use std::io::Read as _;
-                            let mut buf = Vec::new();
-                            if f.read_to_end(&mut buf).is_ok() {
-                                if let Ok(mut cache_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                                    let mut changed = false;
-                                    let mut found_asset = false;
-                                    let mut found_version = false;
-                                    if let Some(results) = cache_val.get_mut("results").and_then(|v| v.as_array_mut()) {
-                                        for asset_obj in results.iter_mut() {
-                                            let a_ns = asset_obj.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("");
-                                            let a_id = asset_obj.get("assetId").and_then(|v| v.as_str()).unwrap_or("");
-                                            if a_ns == namespace && a_id == asset_id {
-                                                found_asset = true;
-                                                if let Some(obj) = asset_obj.as_object_mut() {
-                                                    // Ensure asset-level flag is true
-                                                    if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                                        obj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                                        changed = true;
-                                                    }
-                                                }
-                                                if let Some(vers) = asset_obj.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
-                                                    for ver in vers.iter_mut() {
-                                                        let art = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
-                                                        let mut should_mark = false;
-                                                        if art == artifact_id { should_mark = true; found_version = true; }
-                                                        if !should_mark {
-                                                            if let Some(ref mm) = ue_mm {
-                                                                // Mark any version that supports the selected UE major.minor
-                                                                if let Some(ea) = ver.get("engineVersions").and_then(|v| v.as_array()) {
-                                                                    let token = format!("UE_{}", mm);
-                                                                    if ea.iter().any(|e| e.as_str().map_or(false, |s| s.trim() == token)) {
-                                                                        should_mark = true;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        if should_mark {
-                                                            if let Some(vobj) = ver.as_object_mut() {
-                                                                if vobj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
-                                                                    vobj.insert("downloaded".into(), serde_json::Value::Bool(true));
-                                                                    changed = true;
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !found_asset {
-                                        eprintln!("Note: downloaded asset not found in cached FAB list (ns={}, id={}). Cache not updated.", namespace, asset_id);
-                                    } else if !found_version && title_folder.is_none() {
-                                        eprintln!("Note: matching version (artifact {}) not found under asset {}. Only asset-level flag may be updated.", artifact_id, asset_id);
-                                    }
-                                    if changed {
-                                        if let Ok(bytes) = serde_json::to_vec_pretty(&cache_val) {
-                                            if let Err(e) = fs::write(&cache_path, &bytes) {
-                                                eprintln!("Warning: failed to update FAB cache after download: {}", e);
-                                            } else {
-                                                println!("Updated FAB cache to mark asset {} / {} (artifact {}) as downloaded.", namespace, asset_id, artifact_id);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Warning: failed to parse existing FAB cache for update");
-                                }
-                            } else {
-                                eprintln!("Warning: failed to read existing FAB cache for update");
-                            }
-                        } else {
-                            eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", cache_path.display());
-                        }
+                        update_fab_cache_json(namespace, asset_id, artifact_id, ue_major_minor_version, title_folder, &cache_path);
 
                         utils::emit_event(job_id.as_deref(), "download:complete", "Download complete", Some(100.0), None);
                         if let Some(ref j) = job_id { utils::clear_cancel(j); }
-                        return HttpResponse::Ok().body("Download complete")
+                        return Err(HttpResponse::Ok().body("Download complete"))
                     },
                     Err(e) => {
                         if utils::is_cancelled(job_id.as_deref()) {
                             // Remove the incomplete asset folder so partial files are not left behind
-                            if let Err(err) = fs::remove_dir_all(&out_root) {
-                                eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", out_root.display(), err);
+                            if let Err(err) = fs::remove_dir_all(&download_directory_full_path) {
+                                eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", download_directory_full_path.display(), err);
                             }
                             utils::emit_event(job_id.as_deref(), "cancelled", "Job cancelled", None, None);
                             if let Some(ref j) = job_id { utils::clear_cancel(j); }
-                            return HttpResponse::Ok().body("cancelled");
+                            return Err(HttpResponse::Ok().body("cancelled"));
                         }
                         eprintln!("Download failed from {}: {:?}", url, e);
                         continue;
@@ -455,7 +390,127 @@ pub async fn download_asset(path: web::Path<(String, String, String)>, query: we
     }
 
     utils::emit_event(job_id.as_deref(), "download:error", "Unable to download asset from any distribution point", None, None);
-    HttpResponse::InternalServerError().body("Unable to download asset from any distribution point")
+    Ok(HttpResponse::InternalServerError().body("Unable to download asset from any distribution point"))
+}
+
+fn update_fab_cache_json(namespace: String, asset_id: String, artifact_id: String, ue_major_minor_version: Option<String>, title_folder: Option<String>, cache_path: &PathBuf) {
+    if let Ok(mut f) = fs::File::open(&cache_path) {
+        use std::io::Read as _;
+        let mut buf = Vec::new();
+        if f.read_to_end(&mut buf).is_ok() {
+            if let Ok(mut cache_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                let mut changed = false;
+                let mut found_asset = false;
+                let mut found_version = false;
+                if let Some(results) = cache_val.get_mut("results").and_then(|v| v.as_array_mut()) {
+                    for asset_obj in results.iter_mut() {
+                        let a_ns = asset_obj.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("");
+                        let a_id = asset_obj.get("assetId").and_then(|v| v.as_str()).unwrap_or("");
+                        if a_ns == namespace && a_id == asset_id {
+                            found_asset = true;
+                            if let Some(obj) = asset_obj.as_object_mut() {
+                                // Ensure asset-level flag is true
+                                if obj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                    obj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                    changed = true;
+                                }
+                            }
+                            if let Some(vers) = asset_obj.get_mut("projectVersions").and_then(|v| v.as_array_mut()) {
+                                for ver in vers.iter_mut() {
+                                    let art = ver.get("artifactId").and_then(|v| v.as_str()).unwrap_or("");
+                                    let mut should_mark = false;
+                                    if art == artifact_id {
+                                        should_mark = true;
+                                        found_version = true;
+                                    }
+                                    if !should_mark {
+                                        if let Some(ref mm) = ue_major_minor_version {
+                                            // Mark any version that supports the selected UE major.minor
+                                            if let Some(ea) = ver.get("engineVersions").and_then(|v| v.as_array()) {
+                                                let token = format!("UE_{}", mm);
+                                                if ea.iter().any(|e| e.as_str().map_or(false, |s| s.trim() == token)) {
+                                                    should_mark = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if should_mark {
+                                        if let Some(vobj) = ver.as_object_mut() {
+                                            if vobj.get("downloaded").and_then(|v| v.as_bool()) != Some(true) {
+                                                vobj.insert("downloaded".into(), serde_json::Value::Bool(true));
+                                                changed = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if !found_asset {
+                    eprintln!("Note: downloaded asset not found in cached FAB list (ns={}, id={}). Cache not updated.", namespace, asset_id);
+                } else if !found_version && title_folder.is_none() {
+                    eprintln!("Note: matching version (artifact {}) not found under asset {}. Only asset-level flag may be updated.", artifact_id, asset_id);
+                }
+                if changed {
+                    if let Ok(bytes) = serde_json::to_vec_pretty(&cache_val) {
+                        if let Err(e) = fs::write(&cache_path, &bytes) {
+                            eprintln!("Warning: failed to update FAB cache after download: {}", e);
+                        } else {
+                            println!("Updated FAB cache to mark asset {} / {} (artifact {}) as downloaded.", namespace, asset_id, artifact_id);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("Warning: failed to parse existing FAB cache for update");
+            }
+        } else {
+            eprintln!("Warning: failed to read existing FAB cache for update");
+        }
+    } else {
+        eprintln!("Info: FAB cache file not found at {}. Skipping cache update.", cache_path.display());
+    }
+}
+
+fn get_friendly_folder_name(asset_name: String) -> Option<String> {
+    // Resolve a human-friendly title for folder name, if available.
+    let mut title_folder: Option<String> = None;
+    let mut t = asset_name.clone();
+    // Replace characters illegal on common filesystems.
+    let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    t = t.replace(&illegal[..], "_");
+    // Also trim leading/trailing spaces and dots (Windows quirk).
+    let t = t.trim().trim_matches('.').to_string();
+    if !t.is_empty() {
+        title_folder = Some(t);
+    }
+    title_folder
+}
+
+async fn get_friendly_asset_name(namespace: &String, asset_id: &String, artifact_id: &String, mut epic_services: &mut EpicGames) -> String {
+    let mut display_name = format!("{}/{}/{}", namespace, asset_id, artifact_id);
+    if let Some(details) = utils::get_account_details(&mut epic_services).await {
+        if let Some(lib) = utils::get_fab_library_items(&mut epic_services, details).await {
+            // Loop through Fab Library items in account and match namespace and asset ID
+            if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == *namespace && a.asset_id == *asset_id) {
+                if asset.project_versions.iter().any(|v| v.artifact_id == *artifact_id) {
+                    let t = asset.title.trim();
+                    if !t.is_empty() {
+                        display_name = t.to_string();
+                    }
+                }
+            }
+        }
+    }
+    display_name
+}
+
+async fn epic_authenticate(epic_services: &mut EpicGames) {
+    let auth_code = utils::get_auth_code();
+    let _ = epic_services.auth_code(None, Some(auth_code)).await;
+    let _ = epic_services.login().await;
+    let _ = utils::save_user_details(&epic_services.user_details());
 }
 
 /// Lists Unreal Engine projects under a base directory by detecting folders containing a .uproject file.
@@ -518,13 +573,6 @@ pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<St
 
     HttpResponse::Ok().json(response)
 }
-
-// ===== Unreal Engines Discovery =====
-
-
-
-
-
 
 
 /// Lists installed Unreal Engine directories and attempts to determine their version and editor binary.
@@ -790,11 +838,12 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
     let req = body.into_inner();
     let job_id = req.job_id.clone();
     utils::emit_event(job_id.as_deref(), "import:start", format!("Importing '{}'", req.asset_name), Some(0.0), None);
-    // Resolve source: downloads/<asset_name>/data/Content (download first if missing)
+    // Resolve source: downloads/<asset_name>/data/Content (asset must be pre-downloaded; no download here)
     let safe_name = req.asset_name.trim();
     if safe_name.is_empty() {
         return HttpResponse::BadRequest().body("asset_name is required");
     }
+
     // Determine downloads base (same logic as create_unreal_project)
     let mut downloads_base = PathBuf::from("downloads");
     if !downloads_base.exists() {
@@ -805,6 +854,7 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
             }
         }
     }
+
     // Try exact and case-insensitive match
     let mut asset_dir = downloads_base.join(safe_name);
     if !asset_dir.exists() {
@@ -821,18 +871,13 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
             }
         }
     }
-    // Ensure the asset is fully downloaded (presence + completion marker)
-    let needs_download = !asset_dir.exists() || !utils::is_download_complete(&asset_dir);
-    if needs_download {
-        // Attempt to download (or resume) the asset by name
-        utils::emit_event(job_id.as_deref(), "import:downloading", format!("Downloading missing asset '{}'", safe_name), Some(0.0), None);
-        match utils::ensure_asset_downloaded_by_name(safe_name, job_id.as_deref(), "import:downloading").await {
-            Ok(path) => {
-                asset_dir = path;
-                utils::emit_event(job_id.as_deref(), "import:downloading", format!("Downloaded '{}'", safe_name), Some(100.0), None);
-            },
-            Err(err) => { return HttpResponse::NotFound().body(format!("{}", err)); }
-        }
+    // Require that the asset already exists locally (no implicit download here)
+    if !asset_dir.exists() {
+        return HttpResponse::NotFound().body(format!("Asset '{}' not found under downloads/ (looked in {})", safe_name, downloads_base.display()));
+    }
+    // If a completion marker is used by downloads, ensure it's complete as well
+    if !utils::is_download_complete(&asset_dir) {
+        return HttpResponse::NotFound().body(format!("Asset '{}' is not fully downloaded. Please download it first via /download-asset.", safe_name));
     }
     let src_content = asset_dir.join("data").join("Content");
     if !src_content.is_dir() {
@@ -928,8 +973,6 @@ pub async fn get_version() -> HttpResponse {
     });
     HttpResponse::Ok().json(body)
 }
-
-
 
 /// Creates a new Unreal Engine project from a template/sample `.uproject` using UnrealEditor `-CopyProject`.
 ///
@@ -1411,6 +1454,7 @@ pub async fn open_unreal_engine(query: web::Query<std::collections::HashMap<Stri
     }
 }
 
+
 #[get("/config/paths")]
 pub async fn get_paths_config() -> HttpResponse {
     let cfg = utils::load_paths_config();
@@ -1423,7 +1467,6 @@ pub async fn get_paths_config() -> HttpResponse {
     };
     HttpResponse::Ok().json(status)
 }
-
 
 
 #[post("/config/paths")]
@@ -1466,3 +1509,5 @@ pub async fn cancel_job_endpoint(query: web::Query<std::collections::HashMap<Str
     }
     HttpResponse::BadRequest().body("missing jobId")
 }
+
+
