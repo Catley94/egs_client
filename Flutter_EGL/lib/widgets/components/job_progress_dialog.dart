@@ -217,7 +217,9 @@ Future<void> showJobProgressOverlayDialog({
                 }
                 return; // stop handling further for this event
               }
-              if ((effective != null && effective >= 100.0) || ph == 'done' || ph == 'completed' || ph == 'cancel' || ph == 'cancelled') {
+              // Do not auto-close merely on reaching 100% progress; some jobs (e.g., download -> import)
+              // legitimately continue with additional phases after download completes.
+              if (ph == 'done' || ph == 'completed' || ph == 'cancel' || ph == 'cancelled') {
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
                 if (rootNav.canPop()) {
                   rootNav.pop();
