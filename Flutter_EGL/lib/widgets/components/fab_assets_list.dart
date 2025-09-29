@@ -10,6 +10,8 @@ import '../fab_library_item.dart';
 import 'fab_asset_overlay.dart';
 import 'job_progress_dialog.dart';
 import '../../models/unreal.dart';
+import 'import_prompt.dart';
+import 'create_project_prompt.dart';
 
 class FabAssetsList extends StatefulWidget {
   final VoidCallback? onLoadMore;
@@ -24,34 +26,6 @@ class FabAssetsList extends StatefulWidget {
   State<FabAssetsList> createState() => FabAssetsListState();
 }
 
-class _ImportParams {
-  final String project;
-  final String targetSubdir;
-  final bool overwrite;
-  final String? selectedVersion; // UE major.minor (e.g., '5.6')
-  const _ImportParams({required this.project, required this.targetSubdir, required this.overwrite, this.selectedVersion});
-}
-
-class _CreateParams {
-  final String? enginePath;
-  final String? templateProject;
-  final String? assetName;
-  final String outputDir;
-  final String projectName;
-  final String projectType; // 'bp' or 'cpp'
-  final bool dryRun;
-  final String? selectedVersion; // UE major.minor
-  const _CreateParams({
-    required this.enginePath,
-    required this.templateProject,
-    required this.assetName,
-    required this.outputDir,
-    required this.projectName,
-    required this.projectType,
-    required this.dryRun,
-    this.selectedVersion,
-  });
-}
 
 class FabAssetsListState extends State<FabAssetsList> {
   // Cached highest installed UE version string like '5.6' or '4.27'
@@ -222,8 +196,8 @@ class FabAssetsListState extends State<FabAssetsList> {
       context: context,
       asset: a,
       api: _api,
-      promptCreateProject: (ctx, asset) => _promptCreateProject(ctx, asset),
-      promptImport: (ctx, asset) => _promptImport(ctx, asset),
+      promptCreateProject: (ctx, asset) => showCreateProjectDialog(context: ctx, asset: asset),
+      promptImport: (ctx, asset) => showImportDialog(context: ctx, asset: asset, api: _api),
       showJobProgressDialog: ({required String jobId, required String title}) {
         final navCtx = Navigator.of(context, rootNavigator: true).context;
         return showJobProgressOverlayDialog(context: navCtx, api: _api, jobId: jobId, title: title);
@@ -286,7 +260,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                 : () async {
                     // Primary action: if complete project => create project; else => import asset
                     if (hasComplete) {
-                      final params = await _promptCreateProject(context, a);
+                      final params = await showCreateProjectDialog(context: context, asset: a);
                       if (params == null) return;
                       setState(() => _busy.add(globalIndex));
                       try {
@@ -378,7 +352,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                       }
                       return;
                     }
-                    final params = await _promptImport(context, a);
+                    final params = await showImportDialog(context: context, asset: a, api: _api);
                     if (params == null) return;
                     // Check for Unreal Engine version mismatch before proceeding
                     try {
@@ -530,7 +504,7 @@ class FabAssetsListState extends State<FabAssetsList> {
     );
   }
 
-  Future<_ImportParams?> _promptImport(BuildContext context, FabAsset a) async {
+  Future<ImportParams?> _promptImport(BuildContext context, FabAsset a) async {
     final projectCtrl = TextEditingController(text: '');
     final subdirCtrl = TextEditingController(text: '');
     bool overwrite = false;
@@ -551,7 +525,7 @@ class FabAssetsListState extends State<FabAssetsList> {
     final versionsFull = engines.toList()..sort((a, b) => score(b).compareTo(score(a)));
     String? selectedVersion = versionsFull.isNotEmpty ? versionsFull.first : null;
 
-    final result = await showDialog<_ImportParams>(
+    final result = await showDialog<ImportParams>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(builder: (ctx, setStateSB) {
@@ -674,7 +648,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                     );
                     return;
                   }
-                  Navigator.of(ctx).pop(_ImportParams(project: project, targetSubdir: subdir, overwrite: overwrite, selectedVersion: selectedVersion));
+                  Navigator.of(ctx).pop(ImportParams(project: project, targetSubdir: subdir, overwrite: overwrite, selectedVersion: selectedVersion));
                 },
                 child: const Text('Import'),
               ),
@@ -686,7 +660,7 @@ class FabAssetsListState extends State<FabAssetsList> {
     return result;
   }
 
-  Future<_CreateParams?> _promptCreateProject(BuildContext context, FabAsset asset) async {
+  Future<CreateParams?> _promptCreateProject(BuildContext context, FabAsset asset) async {
     final enginePathCtrl = TextEditingController(text: '');
     final templateCtrl = TextEditingController(text: '');
     final outputDirCtrl = TextEditingController(text: '\$HOME/Documents/Unreal Projects');
@@ -712,7 +686,7 @@ class FabAssetsListState extends State<FabAssetsList> {
     final versionsFull = engines.toList()..sort((a, b) => score(b).compareTo(score(a)));
     String? selectedVersion = versionsFull.isNotEmpty ? versionsFull.first : null;
 
-    final result = await showDialog<_CreateParams>(
+    final result = await showDialog<CreateParams>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
@@ -843,7 +817,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                   );
                   return;
                 }
-                Navigator.of(ctx).pop(_CreateParams(
+                Navigator.of(ctx).pop(CreateParams(
                   enginePath: enginePath.isEmpty ? null : enginePath,
                   templateProject: template.isEmpty ? null : template,
                   assetName: assetName.isEmpty ? null : assetName,
