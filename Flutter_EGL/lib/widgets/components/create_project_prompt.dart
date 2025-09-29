@@ -30,7 +30,7 @@ Future<CreateParams?> showCreateProjectDialog({
   final enginePathCtrl = TextEditingController(text: '');
   final templateCtrl = TextEditingController(text: '');
   final outputDirCtrl = TextEditingController(text: '\$HOME/Documents/Unreal Projects');
-  final projectNameCtrl = TextEditingController(text: 'MyNewGame');
+  final projectNameCtrl = TextEditingController(text: '');
   String projectType = 'bp';
   bool dryRun = true;
   final assetNameCtrl = TextEditingController(text: asset.title.isNotEmpty ? asset.title : asset.assetId);
