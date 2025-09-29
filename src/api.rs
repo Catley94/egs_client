@@ -1013,6 +1013,10 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
             dest_content = dest_content.join(trimmed);
         }
     }
+    // Always create an asset-named subfolder inside the project's Content and copy into it.
+    // Use a friendly, filesystem-safe folder name derived from the requested asset_name.
+    let asset_folder_name = get_friendly_folder_name(req.asset_name.clone()).unwrap_or_else(|| req.asset_name.clone());
+    let dest_content = dest_content.join(asset_folder_name);
 
     let overwrite = req.overwrite.unwrap_or(false);
     let started = Instant::now();
