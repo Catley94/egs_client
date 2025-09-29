@@ -141,8 +141,8 @@ class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject,
                     final p = projects[index];
                     final displayName = widget.nameOf(p);
                     final engineVersion = widget.engineVersionOf(p);
-                    // Hide version label for now per request; but use engineVersion emptiness to drive help icon
-                    final versionLabel = '';
+                    // Show Unreal Engine version badge on project tiles; keep help icon only when unknown
+                    final versionLabel = engineVersion.isNotEmpty ? 'UE $engineVersion' : '';
                     final projPath = widget.projectPathOf(p);
                     final tile = ProjectTile(
                       name: displayName,
