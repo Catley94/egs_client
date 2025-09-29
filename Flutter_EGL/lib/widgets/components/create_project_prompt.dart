@@ -32,7 +32,7 @@ Future<CreateParams?> showCreateProjectDialog({
   final outputDirCtrl = TextEditingController(text: '\$HOME/Documents/Unreal Projects');
   final projectNameCtrl = TextEditingController(text: '');
   String projectType = 'bp';
-  bool dryRun = true;
+  bool dryRun = false;
   final assetNameCtrl = TextEditingController(text: asset.title.isNotEmpty ? asset.title : asset.assetId);
 
   // Build supported UE versions (major.minor) from this asset
@@ -76,30 +76,30 @@ Future<CreateParams?> showCreateProjectDialog({
                   hintText: "e.g., \$HOME/Documents/Unreal Projects",
                 ),
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: assetNameCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Asset name (optional if template path used)',
-                  hintText: 'e.g., Stack O Bot',
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: templateCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Template .uproject path (optional)',
-                  hintText: '/path/to/Sample/Sample.uproject',
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: enginePathCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Engine path (optional)',
-                  hintText: '/path/to/Unreal/UE_5.xx',
-                ),
-              ),
+              const SizedBox(height: 16),
+              // TextField(
+              //   controller: assetNameCtrl,
+              //   decoration: const InputDecoration(
+              //     labelText: 'Asset name (optional if template path used)',
+              //     hintText: 'e.g., Stack O Bot',
+              //   ),
+              // ),
+              // const SizedBox(height: 8),
+              // TextField(
+              //   controller: templateCtrl,
+              //   decoration: const InputDecoration(
+              //     labelText: 'Template .uproject path (optional)',
+              //     hintText: '/path/to/Sample/Sample.uproject',
+              //   ),
+              // ),
+              // const SizedBox(height: 8),
+              // TextField(
+              //   controller: enginePathCtrl,
+              //   decoration: const InputDecoration(
+              //     labelText: 'Engine path (optional)',
+              //     hintText: '/path/to/Unreal/UE_5.xx',
+              //   ),
+              // ),
               const SizedBox(height: 8),
               if (versionsFull.isNotEmpty) ...[
                 // UE version selector used to drive download selection and EngineAssociation
@@ -133,35 +133,35 @@ Future<CreateParams?> showCreateProjectDialog({
               ],
               Row(
                 children: [
-                  const Text('Project type:'),
-                  const SizedBox(width: 12),
-                  DropdownButton<String>(
-                    value: projectType,
-                    items: const [
-                      DropdownMenuItem(value: 'bp', child: Text('Blueprint (bp)')),
-                      DropdownMenuItem(value: 'cpp', child: Text('C++ (cpp)')),
-                    ],
-                    onChanged: (v) {
-                      if (v != null) {
-                        projectType = v;
-                        // refresh local state inside dialog
-                        (ctx as Element).markNeedsBuild();
-                      }
-                    },
-                  ),
+                  // const Text('Project type:'),
+                  // const SizedBox(width: 12),
+                  // DropdownButton<String>(
+                  //   value: projectType,
+                  //   items: const [
+                  //     DropdownMenuItem(value: 'bp', child: Text('Blueprint (bp)')),
+                  //     DropdownMenuItem(value: 'cpp', child: Text('C++ (cpp)')),
+                  //   ],
+                  //   onChanged: (v) {
+                  //     if (v != null) {
+                  //       projectType = v;
+                  //       // refresh local state inside dialog
+                  //       (ctx as Element).markNeedsBuild();
+                  //     }
+                  //   },
+                  // ),
                 ],
               ),
-              StatefulBuilder(
-                builder: (context, setState) {
-                  return CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Dry run (do not actually create)'),
-                    value: dryRun,
-                    onChanged: (v) => setState(() => dryRun = v ?? false),
-                    controlAffinity: ListTileControlAffinity.leading,
-                  );
-                },
-              ),
+              // StatefulBuilder(
+              //   builder: (context, setState) {
+              //     return CheckboxListTile(
+              //       contentPadding: EdgeInsets.zero,
+              //       title: const Text('Dry run (do not actually create)'),
+              //       value: dryRun,
+              //       onChanged: (v) => setState(() => dryRun = v ?? false),
+              //       controlAffinity: ListTileControlAffinity.leading,
+              //     );
+              //   },
+              // ),
             ],
           ),
         ),
