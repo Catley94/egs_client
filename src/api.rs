@@ -556,10 +556,25 @@ pub async fn list_unreal_projects(query: web::Query<std::collections::HashMap<St
                                 if let Some(ext) = p.extension() {
                                     if ext == "uproject" {
                                         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                                        // Try to read EngineAssociation from .uproject to determine UE version
+                                        let mut engine_version = String::new();
+                                        if let Ok(mut f) = fs::File::open(&p) {
+                                            let mut buf = String::new();
+                                            if f.read_to_string(&mut buf).is_ok() {
+                                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&buf) {
+                                                    if let Some(assoc) = v.get("EngineAssociation").and_then(|x| x.as_str()) {
+                                                        if let Some(mm) = crate::utils::resolve_engine_association_to_mm(assoc) {
+                                                            engine_version = mm;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         let info = models::UnrealProjectInfo {
                                             name,
                                             path: path.to_string_lossy().to_string(),
                                             uproject_file: p.to_string_lossy().to_string(),
+                                            engine_version,
                                         };
                                         results.push(info);
                                         break; // one .uproject is enough to mark the directory as a project
@@ -1093,6 +1108,73 @@ pub async fn get_version() -> HttpResponse {
         "name": name,
     });
     HttpResponse::Ok().json(body)
+}
+
+/// Set/override the Unreal Engine version (EngineAssociation) in a .uproject.
+///
+/// Route:
+/// - POST /set-unreal-project-version
+///
+/// JSON body:
+/// - project: Name, directory, or path to a .uproject
+/// - version: UE version like "5.6" (also accepts "5.6.1" or "UE_5.6")
+#[post("/set-unreal-project-version")]
+pub async fn set_unreal_project_version(body: web::Json<models::SetProjectEngineRequest>) -> impl Responder {
+    let req = body.into_inner();
+    let mut s = req.version.trim().to_string();
+    if let Some(rest) = s.strip_prefix("UE_") { s = rest.to_string(); }
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() < 2 { return HttpResponse::BadRequest().body("version must be like 5.6 or UE_5.6 (patch allowed)"); }
+    let major = parts[0].trim();
+    let minor = parts[1].trim();
+    if major.is_empty() || minor.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) || !minor.chars().all(|c| c.is_ascii_digit()) {
+        return HttpResponse::BadRequest().body("version must be like 5.6 or UE_5.6 (patch allowed)");
+    }
+    let mm = format!("{}.{}", major, minor);
+
+    // Resolve .uproject path
+    let mut uproject_path: Option<PathBuf> = utils::resolve_project_path(&req.project);
+    if uproject_path.is_none() {
+        if let Some(project_dir) = utils::resolve_project_dir_from_param(&req.project) {
+            // Find a .uproject inside
+            if let Ok(entries) = fs::read_dir(&project_dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_file() && p.extension().map_or(false, |ext| ext == "uproject") {
+                        uproject_path = Some(p);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let uproject = match uproject_path {
+        Some(p) => p,
+        None => return HttpResponse::BadRequest().body("Project could not be resolved to a .uproject"),
+    };
+
+    // Read, modify, write JSON
+    let content = match fs::read_to_string(&uproject) {
+        Ok(s) => s,
+        Err(e) => return HttpResponse::InternalServerError().body(format!("Failed to read .uproject: {}", e)),
+    };
+    let mut v: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(j) => j,
+        Err(e) => return HttpResponse::BadRequest().body(format!(".uproject is not valid JSON: {}", e)),
+    };
+    // Set EngineAssociation to normalized major.minor
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("EngineAssociation".to_string(), serde_json::Value::String(mm.clone()))
+            .is_some();
+    } else {
+        return HttpResponse::BadRequest().body(".uproject JSON is not an object");
+    }
+    let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());
+    if let Err(e) = fs::write(&uproject, pretty) {
+        return HttpResponse::InternalServerError().body(format!("Failed to write .uproject: {}", e));
+    }
+
+    HttpResponse::Ok().json(models::SimpleResponse { ok: true, message: format!("Set EngineAssociation to {}", mm) })
 }
 
 /// Creates a new Unreal Engine project from a template/sample `.uproject` using UnrealEditor `-CopyProject`.

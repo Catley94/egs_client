@@ -10,6 +10,8 @@ class ProjectsList<TProject, TEngine> extends StatefulWidget {
   final String Function(TProject) engineVersionOf;
   final String Function(TEngine) engineVersionOfEngine;
   final Future<({bool launched, String message})> Function({required String project, required String version}) openProject;
+  final Future<({bool ok, String message})> Function({required String project, required String version}) setProjectVersion;
+  final VoidCallback refreshProjects;
   final Color Function(int index) tileColorBuilder;
 
   const ProjectsList({
@@ -21,6 +23,8 @@ class ProjectsList<TProject, TEngine> extends StatefulWidget {
     required this.engineVersionOf,
     required this.engineVersionOfEngine,
     required this.openProject,
+    required this.setProjectVersion,
+    required this.refreshProjects,
     required this.tileColorBuilder,
   });
 
@@ -30,6 +34,66 @@ class ProjectsList<TProject, TEngine> extends StatefulWidget {
 
 class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject, TEngine>> {
   bool _opening = false;
+
+  Future<void> _promptSetVersion(BuildContext context, String projectPath) async {
+    final controller = TextEditingController();
+    String? errorText;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setStateSB) => AlertDialog(
+            title: const Text('Set Unreal Engine version'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: 'e.g., 5.6',
+                    labelText: 'UE version (major.minor)',
+                    errorText: errorText,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text('Tip: You can enter 5.6 or UE_5.6. Patch like 5.6.1 is also accepted.'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  final v = controller.text.trim();
+                  final re = RegExp(r'^(?:UE_)?\d+\.\d+(?:\.\d+)?$');
+                  if (!re.hasMatch(v)) {
+                    setStateSB(() => errorText = 'Enter a version like 5.6 or UE_5.6');
+                    return;
+                  }
+                  try {
+                    final r = await widget.setProjectVersion(project: projectPath, version: v);
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(r.message.isNotEmpty ? r.message : 'UE version updated')),
+                    );
+                    widget.refreshProjects();
+                    Navigator.of(ctx).pop();
+                  } catch (e) {
+                    if (!mounted) return;
+                    setStateSB(() => errorText = e.toString());
+                  }
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -77,12 +141,15 @@ class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject,
                     final p = projects[index];
                     final displayName = widget.nameOf(p);
                     final engineVersion = widget.engineVersionOf(p);
-                    final versionLabel = engineVersion.isNotEmpty ? 'UE $engineVersion' : 'UE unknown';
-                    return ProjectTile(
+                    // Hide version label for now per request; but use engineVersion emptiness to drive help icon
+                    final versionLabel = '';
+                    final projPath = widget.projectPathOf(p);
+                    final tile = ProjectTile(
                       name: displayName,
                       version: versionLabel,
                       color: widget.tileColorBuilder(index),
                       showName: true,
+                      onHelpTap: engineVersion.isEmpty ? () => _promptSetVersion(context, projPath) : null,
                       onTap: () async {
                         if (_opening) return;
                         setState(() => _opening = true);
@@ -118,6 +185,7 @@ class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject,
                         }
                       },
                     );
+                    return tile;
                   },
                 );
               },

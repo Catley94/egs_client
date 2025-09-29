@@ -745,6 +745,84 @@ pub fn parse_version_from_name(name: &str) -> Option<String> {
     if !version.is_empty() { Some(version) } else { None }
 }
 
+pub fn normalize_engine_association(assoc: &str) -> Option<String> {
+    let mut s = assoc.trim();
+    if s.is_empty() { return None; }
+    if let Some(rest) = s.strip_prefix("UE_") { s = rest; }
+    // Accept patterns like 5, 5.4, 5.4.1
+    let mut parts = s.split('.');
+    let major = parts.next().unwrap_or("");
+    if major.chars().all(|c| c.is_ascii_digit()) && !major.is_empty() {
+        let minor = parts.next().unwrap_or("0");
+        if minor.chars().all(|c| c.is_ascii_digit()) {
+            return Some(format!("{}.{}", major, minor));
+        }
+    }
+    None
+}
+
+/// Read BuildId from Engine/Build/Build.version if present
+pub fn read_build_id(engine_dir: &Path) -> Option<String> {
+    let build_file = engine_dir.join("Engine").join("Build").join("Build.version");
+    if let Ok(bytes) = fs::read(&build_file) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(id) = v.get("BuildId").and_then(|x| x.as_str()) {
+                let s = id.trim();
+                if !s.is_empty() { return Some(s.to_string()); }
+            }
+        }
+    }
+    None
+}
+
+/// Convert version like "5.6.1" or "5.6" to major.minor form, e.g., "5.6"
+pub fn to_major_minor(ver: &str) -> String {
+    let mut it = ver.split('.');
+    let major = it.next().unwrap_or("");
+    let minor = it.next().unwrap_or("0");
+    if !major.is_empty() && major.chars().all(|c| c.is_ascii_digit()) && minor.chars().all(|c| c.is_ascii_digit()) {
+        format!("{}.{}", major, minor)
+    } else {
+        ver.to_string()
+    }
+}
+
+/// Resolve EngineAssociation to UE major.minor. Handles numeric strings and GUID BuildIds.
+pub fn resolve_engine_association_to_mm(assoc: &str) -> Option<String> {
+    if let Some(mm) = normalize_engine_association(assoc) {
+        return Some(mm);
+    }
+    let s = assoc.trim();
+    if s.is_empty() { return None; }
+    // Detect GUID-like: 8-4-4-4-12 hex groups
+    let is_guid_like = {
+        let parts: Vec<&str> = s.split('-').collect();
+        parts.len() == 5 && parts[0].len() == 8 && parts[1].len() == 4 && parts[2].len() == 4 && parts[3].len() == 4 && parts[4].len() == 12 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    if !is_guid_like { return None; }
+
+    let engines_root = default_unreal_engines_dir();
+    if let Ok(entries) = fs::read_dir(&engines_root) {
+        for ent in entries.flatten() {
+            let dir = ent.path();
+            if dir.is_dir() {
+                // Require it looks like an engine dir containing Engine/Build/Build.version
+                let build_file = dir.join("Engine").join("Build").join("Build.version");
+                if build_file.is_file() {
+                    if let Some(build_id) = read_build_id(&dir) {
+                        if build_id.eq_ignore_ascii_case(s) {
+                            if let Some(ver) = read_build_version(&dir) {
+                                return Some(to_major_minor(&ver));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 
 pub fn resolve_project_path(project_param: &str) -> Option<PathBuf> {
     let p = PathBuf::from(project_param);

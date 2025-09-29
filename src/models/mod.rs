@@ -124,6 +124,7 @@ pub struct UnrealProjectInfo {
     pub name: String,
     pub path: String,
     pub uproject_file: String,
+    pub engine_version: String,
 }
 
 #[derive(Serialize)]
@@ -151,4 +152,16 @@ pub struct Totals {
     pub downloaded: usize,
     pub skipped_zero: usize,
     pub up_to_date: usize
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SetProjectEngineRequest {
+    pub project: String, // project dir or .uproject path
+    pub version: String, // e.g., "5.6" or "5.6.1" or "UE_5.6"
+}
+
+#[derive(Serialize)]
+pub struct SimpleResponse {
+    pub ok: bool,
+    pub message: String,
 }

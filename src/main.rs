@@ -288,6 +288,7 @@ async fn main() -> std::io::Result<()> {
                 .service(api::auth_start)
                 .service(api::auth_complete)
                 .service(api::get_version)
+                .service(api::set_unreal_project_version)
         })
         .bind(&bind_addr) {
             Ok(server) => {

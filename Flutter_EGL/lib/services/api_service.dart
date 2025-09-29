@@ -167,6 +167,30 @@ class ApiService {
     return projects;
   }
 
+  Future<({bool ok, String message})> setUnrealProjectVersion({required String project, required String version}) async {
+    final uri = _uri('/set-unreal-project-version');
+    final payload = {'project': project, 'version': version};
+    final res = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(payload));
+    final body = res.body;
+    if (res.statusCode != 200) {
+      try {
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        final msg = data['message']?.toString() ?? body;
+        throw Exception('Failed to set UE version: ${res.statusCode} $msg');
+      } catch (_) {
+        throw Exception('Failed to set UE version: ${res.statusCode} $body');
+      }
+    }
+    try {
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      final ok = data['ok'] == true;
+      final msg = data['message']?.toString() ?? '';
+      return (ok: ok, message: msg);
+    } catch (_) {
+      return (ok: true, message: body.isNotEmpty ? body : 'OK');
+    }
+  }
+
   String _normalizeEngineAssociation(String assoc) {
     var s = assoc.trim();
     if (s.isEmpty) return '';

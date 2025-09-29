@@ -280,6 +280,15 @@ class _LibraryTabState extends State<LibraryTab> {
                 final r = await _api.openUnrealProject(project: project, version: version);
                 return (launched: r.launched, message: r.message);
               },
+              setProjectVersion: ({required String project, required String version}) async {
+                final r = await _api.setUnrealProjectVersion(project: project, version: version);
+                return (ok: r.ok, message: r.message);
+              },
+              refreshProjects: () {
+                setState(() {
+                  _projectsFuture = _api.listUnrealProjects();
+                });
+              },
               tileColorBuilder: (i) => AppPalette.varied(AppPalette.projectTileBase, i, cycle: 5, t: 0.25),
             ),
             const SizedBox(height: 24),
