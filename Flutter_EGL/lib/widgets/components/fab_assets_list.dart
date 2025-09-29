@@ -40,6 +40,7 @@ class _CreateParams {
   final String projectName;
   final String projectType; // 'bp' or 'cpp'
   final bool dryRun;
+  final String? selectedVersion; // UE major.minor
   const _CreateParams({
     required this.enginePath,
     required this.templateProject,
@@ -48,6 +49,7 @@ class _CreateParams {
     required this.projectName,
     required this.projectType,
     required this.dryRun,
+    this.selectedVersion,
   });
 }
 
@@ -291,10 +293,57 @@ class FabAssetsListState extends State<FabAssetsList> {
                         final jobId = _makeJobId();
                         final navCtx = Navigator.of(context, rootNavigator: true).context;
                         final dlg = showJobProgressOverlayDialog(context: navCtx, api: _api, jobId: jobId, title: 'Creating project...');
+                        // Determine UE version and artifactId based on selection
+                        String? targetMM = (params.selectedVersion != null && params.selectedVersion!.isNotEmpty)
+                            ? params.selectedVersion
+                            : null;
+                        String? _artifactForVersion(FabAsset asset, String? mm) {
+                          if (mm == null || mm.isEmpty) return null;
+                          final token = 'UE_' + mm;
+                          for (final pv in asset.projectVersions) {
+                            if (pv.engineVersions.any((ev) => ev.trim() == token)) {
+                              return pv.artifactId;
+                            }
+                          }
+                          return null;
+                        }
+                        String? _pickBestArtifactId(FabAsset asset) {
+                          int scoreMm(String mm) {
+                            final parts = mm.split('.');
+                            final maj = int.tryParse(parts.isNotEmpty ? parts[0] : '0') ?? 0;
+                            final min = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+                            return maj * 100 + min;
+                          }
+                          String? bestArtifact;
+                          int bestScore = -1;
+                          for (final pv in asset.projectVersions) {
+                            int pvBest = -1;
+                            for (final ev in pv.engineVersions) {
+                              final parts = ev.split('_');
+                              if (parts.length > 1) {
+                                final mm = parts[1];
+                                final sc = scoreMm(mm);
+                                pvBest = pvBest < 0 ? sc : (pvBest > sc ? pvBest : sc);
+                              }
+                            }
+                            if (pvBest < 0) pvBest = 0;
+                            if (pvBest > bestScore) {
+                              bestScore = pvBest;
+                              bestArtifact = pv.artifactId.isNotEmpty ? pv.artifactId : bestArtifact;
+                            }
+                          }
+                          return bestArtifact;
+                        }
+                        final computedArtifactId = _artifactForVersion(a, targetMM) ?? _pickBestArtifactId(a) ?? (a.projectVersions.isNotEmpty ? a.projectVersions.last.artifactId : '');
+
                         final res = await _api.createUnrealProject(
                           enginePath: params.enginePath,
                           templateProject: params.templateProject,
                           assetName: params.assetName,
+                          ue: (targetMM != null && targetMM!.isNotEmpty) ? targetMM : null,
+                          namespace: a.assetNamespace,
+                          assetId: a.assetId,
+                          artifactId: computedArtifactId.isNotEmpty ? computedArtifactId : null,
                           outputDir: params.outputDir,
                           projectName: params.projectName,
                           projectType: params.projectType,
@@ -646,6 +695,23 @@ class FabAssetsListState extends State<FabAssetsList> {
     bool dryRun = true;
     final assetNameCtrl = TextEditingController(text: asset.title.isNotEmpty ? asset.title : asset.assetId);
 
+    // Build supported UE versions (major.minor) from this asset
+    final engines = <String>{};
+    for (final pv in asset.projectVersions) {
+      for (final ev in pv.engineVersions) {
+        final parts = ev.split('_');
+        if (parts.length > 1) engines.add(parts[1]);
+      }
+    }
+    int score(String v) {
+      final parts = v.split('.');
+      final major = int.tryParse(parts.isNotEmpty ? parts[0] : '0') ?? 0;
+      final minor = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+      return major * 100 + minor;
+    }
+    final versionsFull = engines.toList()..sort((a, b) => score(b).compareTo(score(a)));
+    String? selectedVersion = versionsFull.isNotEmpty ? versionsFull.first : null;
+
     final result = await showDialog<_CreateParams>(
       context: context,
       builder: (ctx) {
@@ -695,6 +761,36 @@ class FabAssetsListState extends State<FabAssetsList> {
                   ),
                 ),
                 const SizedBox(height: 8),
+                if (versionsFull.isNotEmpty) ...[
+                  // UE version selector used to drive download selection and EngineAssociation
+                  StatefulBuilder(
+                    builder: (context, setStateSB) {
+                      return InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'UE Version',
+                          border: OutlineInputBorder(gapPadding: 0),
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: selectedVersion,
+                            isExpanded: true,
+                            isDense: true,
+                            items: versionsFull
+                                .map((v) => DropdownMenuItem<String>(
+                                      value: v,
+                                      child: Text(v),
+                                    ))
+                                .toList(),
+                            onChanged: (v) => setStateSB(() => selectedVersion = v),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 Row(
                   children: [
                     const Text('Project type:'),
@@ -755,6 +851,7 @@ class FabAssetsListState extends State<FabAssetsList> {
                   projectName: projectName,
                   projectType: projectType,
                   dryRun: dryRun,
+                  selectedVersion: selectedVersion,
                 ));
               },
               child: const Text('Create'),

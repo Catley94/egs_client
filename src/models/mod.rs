@@ -63,6 +63,12 @@ pub struct CreateUnrealProjectRequest {
     /// Convenience: name of a downloaded asset under downloads/ (e.g., "Stack O Bot").
     /// When provided and template_project is empty, the server will search downloads/<asset_name>/ recursively for a .uproject.
     pub asset_name: Option<String>,
+    /// Optional Fab identifiers to trigger a download prior to create (reusing the same download flow as import).
+    pub namespace: Option<String>,
+    pub asset_id: Option<String>,
+    pub artifact_id: Option<String>,
+    /// Optional Unreal Engine major.minor version (e.g., "5.6") to select engine and set EngineAssociation.
+    pub ue: Option<String>,
     pub output_dir: String,
     pub project_name: String,
     pub project_type: Option<String>, // "bp" or "cpp"

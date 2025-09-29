@@ -1236,6 +1236,22 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
     let job_id = req.job_id.clone();
     utils::emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
 
+    // If Fab identifiers are provided, reuse the same download flow as /import-asset to ensure the sample/template is present
+    if let (Some(namespace), Some(asset_id), Some(artifact_id)) = (req.namespace.clone(), req.asset_id.clone(), req.artifact_id.clone()) {
+        let mut q: HashMap<String, String> = HashMap::new();
+        if let Some(ref j) = job_id { q.insert("jobId".to_string(), j.clone()); }
+        if let Some(ref ue) = req.ue { if !ue.trim().is_empty() { q.insert("ue".to_string(), ue.trim().to_string()); } }
+        let path = web::Path::from((namespace.clone(), asset_id.clone(), artifact_id.clone()));
+        let query: Query<HashMap<String, String>> = web::Query(q);
+        match download_asset_handler(path, query).await {
+            Err(resp) => {
+                if !resp.status().is_success() { return resp; }
+                if utils::is_cancelled(job_id.as_deref()) { if let Some(ref j) = job_id { utils::clear_cancel(j); } return HttpResponse::Ok().body("cancelled"); }
+            }
+            Ok(resp) => { return resp; }
+        }
+    }
+
     // Validate inputs
     let template_empty = req.template_project.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
     let asset_empty = req.asset_name.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
@@ -1250,8 +1266,30 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
         return HttpResponse::BadRequest().body("project_type must be 'bp' or 'cpp'");
     }
 
-    // Resolve engine path: try provided, else discover from default engines dir and pick latest
-    let engine_path = if let Some(p) = req.engine_path.clone() { PathBuf::from(p) } else {
+    // Resolve engine path: prefer explicit engine_path; else if ue provided, pick matching engine; else pick latest
+    let engine_path = if let Some(p) = req.engine_path.clone() { PathBuf::from(p) } else if let Some(ue) = req.ue.clone() {
+        let base = utils::default_unreal_engines_dir();
+        let mut engines: Vec<models::UnrealEngineInfo> = Vec::new();
+        if base.is_dir() {
+            if let Ok(entries) = fs::read_dir(&base) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() && p.join("Engine").join("Binaries").exists() {
+                        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                        let version = utils::read_build_version(&p)
+                            .or_else(|| utils::parse_version_from_name(&name))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let editor_path = utils::find_editor_binary(&p).map(|pp| pp.to_string_lossy().to_string());
+                        engines.push(models::UnrealEngineInfo { name, version, path: p.to_string_lossy().to_string(), editor_path });
+                    }
+                }
+            }
+        }
+        match utils::pick_engine_for_version(&engines, &ue) {
+            Some(info) => PathBuf::from(info.path.clone()),
+            None => return HttpResponse::NotFound().body("Requested UE version not found among discovered engines"),
+        }
+    } else {
         let base = utils::default_unreal_engines_dir();
         // pick the first engine when sorted descending by version string
         let mut engines: Vec<PathBuf> = Vec::new();
@@ -1506,6 +1544,29 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
                 .replace("\"FriendlyName\":\"", &format!("\"FriendlyName\":\"{}", req.project_name));
             if updated != json_text {
                 if let Err(e) = fs::write(&target_uproject, updated) { eprintln!("Warning: failed to update project name in .uproject: {}", e); }
+            }
+        }
+    }
+
+    // If a UE version was specified, set EngineAssociation in the created .uproject to its major.minor form
+    if let Some(mut ue) = req.ue.clone() {
+        ue = ue.trim().to_string();
+        if ue.starts_with("UE_") { ue = ue[3..].to_string(); }
+        let parts: Vec<&str> = ue.split('.').collect();
+        if parts.len() >= 2 {
+            let mm = format!("{}.{}", parts[0].trim(), parts[1].trim());
+            if let Ok(text) = fs::read_to_string(&target_uproject) {
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(mut v) => {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("EngineAssociation".to_string(), serde_json::Value::String(mm.clone()));
+                            if let Ok(pretty) = serde_json::to_string_pretty(&v) {
+                                if let Err(e) = fs::write(&target_uproject, pretty) { eprintln!("Warning: failed to write EngineAssociation: {}", e); }
+                            }
+                        }
+                    }
+                    Err(e) => { eprintln!("Warning: .uproject JSON parse failed when setting EngineAssociation: {}", e); }
+                }
             }
         }
     }
