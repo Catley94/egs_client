@@ -1300,6 +1300,7 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
     };
 
     // Locate UnrealEditor binary (Linux path). Add Windows/macOS variants as needed.
+    // TODO remove all but Linux bin
     let editor_bin_candidates = [
         engine_path.join("Engine/Binaries/Linux/UnrealEditor"),
         engine_path.join("Engine/Binaries/Linux/UnrealEditor.exe"), // in case of WSL path
@@ -1399,12 +1400,33 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
                 }
             }
         }
-        // If missing or incomplete, attempt to (re)download by name first
-        let needs_download = !asset_dir.exists() || !utils::is_download_complete(&asset_dir);
+        // Determine the directory to search based on requested UE version (if any)
+        let mut search_dir = asset_dir.clone();
+        if let Some(ref ue) = req.ue {
+            let mm = ue.trim();
+            if !mm.is_empty() {
+                let candidate = asset_dir.join(mm);
+                if candidate.exists() {
+                    search_dir = candidate;
+                }
+            }
+        }
+        // If missing or incomplete, attempt to (re)download by name first.
+        // When a UE version is specified, treat a completed version subfolder as complete as well.
+        let mut needs_download = !asset_dir.exists() || !utils::is_download_complete(&asset_dir);
+        if let Some(ref ue) = req.ue {
+            let mm = ue.trim();
+            if !mm.is_empty() {
+                let version_dir = asset_dir.join(mm);
+                if version_dir.exists() && utils::is_download_complete(&version_dir) {
+                    needs_download = false; // already downloaded for this version
+                }
+            }
+        }
         if needs_download {
             utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), Some(0.0), None);
             match utils::ensure_asset_downloaded_by_name(name, job_id.as_deref(), "create:downloading").await {
-                Ok(p) => { asset_dir = p; utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
+                Ok(p) => { asset_dir = p.clone(); search_dir = if let Some(ref ue) = req.ue { let mm = ue.trim(); if !mm.is_empty() { let c = p.join(mm); if c.exists() { c } else { p } } else { p } } else { p }; utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
                 Err(err) => {
                     eprintln!("{}", err);
                     utils::emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None);
@@ -1413,8 +1435,8 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
             }
         }
         // Log what base/asset dir we ended up with for diagnostics
-        println!("Searching for .uproject under: {}", asset_dir.to_string_lossy());
-        find_uproject_bfs(&asset_dir, 8)
+        println!("Searching for .uproject under: {}", search_dir.to_string_lossy());
+        find_uproject_bfs(&search_dir, 8)
     } else { None };
 
     let template_path = match template_path {

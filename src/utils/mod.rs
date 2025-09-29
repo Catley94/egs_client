@@ -539,6 +539,23 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
     // Mark download as complete
     let _ = std::fs::write(download_directory_full_path.join(".download_complete"), "ok");
+
+    // After a successful download, remove the temporary chunks folder under the asset
+    // The temp directory is created relative to the asset root (e.g., downloads/<Asset>/temp),
+    // so compute it the same way we did earlier.
+    let temp_dir_final = download_directory_full_path.parent().map(|p| p.join("temp")).unwrap_or_else(|| download_directory_full_path.join("temp"));
+    match std::fs::remove_dir_all(&temp_dir_final) {
+        Ok(_) => {
+            println!("Cleaned up temp folder: {}", temp_dir_final.display());
+        }
+        Err(e) => {
+            // Ignore when it does not exist; warn on other errors
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Warning: failed to remove temp folder {}: {}", temp_dir_final.display(), e);
+            }
+        }
+    }
+
     Ok(())
 }
 
