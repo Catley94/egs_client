@@ -1164,7 +1164,7 @@ pub async fn set_unreal_project_version(body: web::Json<models::SetProjectEngine
     };
     // Set EngineAssociation to normalized major.minor
     if let Some(obj) = v.as_object_mut() {
-        obj.insert("EngineAssociation".to_string(), serde_json::Value::String(mm.clone()))
+        let _ = obj.insert("EngineAssociation".to_string(), serde_json::Value::String(mm.clone()))
             .is_some();
     } else {
         return HttpResponse::BadRequest().body(".uproject JSON is not an object");

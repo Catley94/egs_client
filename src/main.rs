@@ -268,119 +268,121 @@ async fn main() -> std::io::Result<()> {
     // Shared child handle for Ctrl+C handling when in BOTH mode
     let flutter_child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
 
-    // Retry loop on bind failure to avoid immediate exit (e.g., short-lived port conflicts)
-    loop {
-        match HttpServer::new(|| {
-            App::new()
-                // Public HTTP endpoints
-                .service(api::get_fab_list)
-                .service(api::refresh_fab_list)
-                .service(api::download_asset)
-                .service(api::list_unreal_projects)
-                .service(api::list_unreal_engines)
-                .service(api::open_unreal_project)
-                .service(api::open_unreal_engine)
-                .service(api::import_asset)
-                .service(api::create_unreal_project)
-                .service(api::ws_endpoint)
-                .service(api::get_paths_config)
-                .service(api::set_paths_config)
-                .service(api::auth_start)
-                .service(api::auth_complete)
-                .service(api::get_version)
-                .service(api::set_unreal_project_version)
-        })
-        .bind(&bind_addr) {
-            Ok(server) => {
-                // Start server
-                let srv = server.run();
+    // Create a listener. If the requested address is unavailable, fall back to a dynamic free port.
+    let listener = match std::net::TcpListener::bind(&bind_addr) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind to {}: {} — falling back to dynamic port (127.0.0.1:0)", bind_addr, e);
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Unable to bind to any port on 127.0.0.1")
+        }
+    };
+    let actual_addr = listener.local_addr().map(|a| a.to_string()).unwrap_or(bind_addr.clone());
+    println!("HTTP server will listen on {}", actual_addr);
 
-                // If BOTH mode, launch Flutter after server is started
-                if mode == RunMode::Both {
-                    match resolve_flutter_binary() {
-                        Some(ui_bin) => {
-                            println!("Launching Flutter UI: {}", ui_bin.display());
-                            match spawn_flutter(&ui_bin, &bind_addr) {
-                                Ok(child) => {
-                                    // Store child handle
-                                    let mut guard = flutter_child.lock().unwrap();
-                                    *guard = Some(child);
+    let server = HttpServer::new(|| {
+        App::new()
+            // Public HTTP endpoints
+            .service(api::get_fab_list)
+            .service(api::refresh_fab_list)
+            .service(api::download_asset)
+            .service(api::list_unreal_projects)
+            .service(api::list_unreal_engines)
+            .service(api::open_unreal_project)
+            .service(api::open_unreal_engine)
+            .service(api::import_asset)
+            .service(api::create_unreal_project)
+            .service(api::ws_endpoint)
+            .service(api::get_paths_config)
+            .service(api::set_paths_config)
+            .service(api::auth_start)
+            .service(api::auth_complete)
+            .service(api::get_version)
+            .service(api::set_unreal_project_version)
+    })
+    .listen(listener)?;
 
-                                    // Watcher: when Flutter UI exits, stop the HTTP server
-                                    let watcher_child = Arc::clone(&flutter_child);
-                                    let srv_handle2 = srv.handle();
-                                    tokio::spawn(async move {
-                                        loop {
-                                            tokio::time::sleep(Duration::from_millis(500)).await;
-                                            if let Ok(mut g) = watcher_child.lock() {
-                                                if let Some(ch) = g.as_mut() {
-                                                    match ch.try_wait() {
-                                                        Ok(Some(status)) => {
-                                                            eprintln!("Flutter UI exited with status: {} — stopping backend...", status);
-                                                            let h = srv_handle2.clone();
-                                                            tokio::spawn(async move { h.stop(true).await; });
-                                                            break;
-                                                        }
-                                                        Ok(None) => {}
-                                                        Err(e) => {
-                                                            eprintln!("Error monitoring Flutter UI process: {}", e);
-                                                        }
-                                                    }
-                                                } else {
-                                                    break;
-                                                }
+    // Start server
+    let srv = server.run();
+
+    // If BOTH mode, launch Flutter after server is started (pass resolved address)
+    if mode == RunMode::Both {
+        match resolve_flutter_binary() {
+            Some(ui_bin) => {
+                println!("Launching Flutter UI: {}", ui_bin.display());
+                match spawn_flutter(&ui_bin, &actual_addr) {
+                    Ok(child) => {
+                        // Store child handle
+                        let mut guard = flutter_child.lock().unwrap();
+                        *guard = Some(child);
+
+                        // Watcher: when Flutter UI exits, stop the HTTP server
+                        let watcher_child = Arc::clone(&flutter_child);
+                        let srv_handle2 = srv.handle();
+                        tokio::spawn(async move {
+                            loop {
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                if let Ok(mut g) = watcher_child.lock() {
+                                    if let Some(ch) = g.as_mut() {
+                                        match ch.try_wait() {
+                                            Ok(Some(status)) => {
+                                                eprintln!("Flutter UI exited with status: {} — stopping backend...", status);
+                                                let h = srv_handle2.clone();
+                                                tokio::spawn(async move { h.stop(true).await; });
+                                                break;
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                eprintln!("Error monitoring Flutter UI process: {}", e);
                                             }
                                         }
-                                    });
-                                }
-                                Err(err) => {
-                                    eprintln!("Failed to spawn Flutter UI: {}", err);
+                                    } else {
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        None => {
-                            eprintln!("Flutter UI binary not found. Build it first (see justfile tasks) or set FLUTTER_APP_PATH.");
-                        }
+                        });
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to spawn Flutter UI: {}", err);
                     }
                 }
-
-                // Ctrl+C handling: stop server and kill Flutter child if present
-                {
-                    let flutter_child = Arc::clone(&flutter_child);
-                    let _ = ctrlc::set_handler(move || {
-                        eprintln!("\nCtrl+C received — shutting down...");
-                        // Request Actix system stop (thread-safe); avoids needing a Tokio runtime here
-                        actix_web::rt::System::current().stop();
-                        // Kill Flutter child if running
-                        if let Ok(mut guard) = flutter_child.lock() {
-                            if let Some(child) = guard.as_mut() {
-                                let _ = child.kill();
-                            }
-                        }
-                    });
-                }
-
-                // Listen for WS-close-triggered shutdown requests and stop the server
-                {
-                    let srv_handle3 = srv.handle();
-                    let mut rx = shutdown_tx.subscribe();
-                    tokio::spawn(async move {
-                        if rx.recv().await.is_ok() {
-                            eprintln!("Shutdown requested (WS close) — stopping backend...");
-                            let h = srv_handle3.clone();
-                            tokio::spawn(async move { h.stop(true).await; });
-                        }
-                    });
-                }
-
-                return srv.await;
             }
-            Err(e) => {
-                eprintln!("Failed to bind to {}: {} — retrying in 2s...", bind_addr, e);
-                tokio::time::sleep(Duration::from_secs(2)).await;
+            None => {
+                eprintln!("Flutter UI binary not found. Build it first (see justfile tasks) or set FLUTTER_APP_PATH.");
             }
         }
     }
+
+    // Ctrl+C handling: stop server and kill Flutter child if present
+    {
+        let flutter_child = Arc::clone(&flutter_child);
+        let _ = ctrlc::set_handler(move || {
+            eprintln!("\nCtrl+C received — shutting down...");
+            // Request Actix system stop (thread-safe); avoids needing a Tokio runtime here
+            actix_web::rt::System::current().stop();
+            // Kill Flutter child if running
+            if let Ok(mut guard) = flutter_child.lock() {
+                if let Some(child) = guard.as_mut() {
+                    let _ = child.kill();
+                }
+            }
+        });
+    }
+
+    // Listen for WS-close-triggered shutdown requests and stop the server
+    {
+        let srv_handle3 = srv.handle();
+        let mut rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            if rx.recv().await.is_ok() {
+                eprintln!("Shutdown requested (WS close) — stopping backend...");
+                let h = srv_handle3.clone();
+                tokio::spawn(async move { h.stop(true).await; });
+            }
+        });
+    }
+
+    return srv.await;
 }
 
 

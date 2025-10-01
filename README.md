@@ -58,7 +58,7 @@ How to run
 
 - Run backend only
   1) cargo run -- Backend
-  - This starts the Actix server at http://127.0.0.1:8080. You can interact with it using curl or the Flutter app launched separately.
+  - By default attempts 127.0.0.1:8080; if unavailable, it falls back to a free dynamic port and logs it (e.g., HTTP server will listen on 127.0.0.1:12345). You can interact with it using curl or the Flutter app launched separately.
 
 - Run Flutter UI only
   1) cd Flutter_EGL
@@ -71,6 +71,12 @@ How to run
   - The backend starts first, then tries to locate a Flutter binary and launch the UI pointed at the backend bind address.
 
 Configuration and directories
+- Port configuration
+  - Default: tries 127.0.0.1:8080.
+  - If that port is taken, the backend automatically falls back to a free dynamic port (binds to 127.0.0.1:0) and prints the chosen address, e.g., HTTP server will listen on 127.0.0.1:12345.
+  - Override options:
+    - Env: BIND_ADDR (e.g., 0.0.0.0:9000) or PORT (e.g., 9000). BIND_ADDR has precedence.
+    - In Both mode (backend spawns Flutter), the chosen base URL is passed to the UI via EGS_BASE_URL.
 - In debug/dev builds:
   - cache/: various cache files including fab_list.json and token cache (.egs_client_tokens.json)
   - downloads/: asset downloads arranged by sanitized title or namespace-id-artifactId
@@ -99,6 +105,12 @@ Troubleshooting
 - 401/403 on Fab list: complete the auth flow first (GET /auth/start then POST /auth/complete with code).
 - No progress events in UI: ensure the UI opens /ws with the correct jobId used by the API call.
 - Engine launch fails: verify the paths in the Paths Config or environment variables (EGS_UNREAL_ENGINES_DIR etc.).
+
+FAQ / Notes
+- Where does AssetInfo.key_images come from?
+  - From the external crate egs_api. That crate calls the Epic Games Store/Fab HTTP APIs and deserializes the JSON payloads into its own types, including egs_api::api::types::asset_info::AssetInfo which has a key_images field (array of images per asset).
+  - This project does not build AssetInfo itself; it consumes what egs_api returns. When you request the Fab library, egs_api populates AssetInfo (including key_images) and we pass that through to the UI.
+  - See docs: https://docs.rs/egs-api/latest/egs_api/api/types/ and the AssetInfo/KeyImage types in that crate.
 
 License
 - See repository policy or add a LICENSE file as appropriate.
