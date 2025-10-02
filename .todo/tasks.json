@@ -71,7 +71,7 @@
     "tags": [],
     "title": "Finish setting up the question mark",
     "description": "Currently you either cannot click the question mark because it opens the unreal project or I miss clicked, but the long press option is still there. Instead, create a hover animation when hovering over the question mark, make it bigger so it\u0027s easier to press.",
-    "status": "TODO",
+    "status": "DONE",
     "date": {
       "date": {
         "year": 2025,
@@ -83,6 +83,28 @@
         "minute": 30,
         "second": 16,
         "nano": 739539098
+      }
+    },
+    "isImported": false
+  },
+  {
+    "id": "TASK_23",
+    "priority": "LOW",
+    "tags": [],
+    "title": "Add more pictures in fab asset overlay",
+    "description": "Somehow in Epic Asset Manager it displays all the images. Is this from the API or web scraping? Could we web scrape to get the images?",
+    "status": "TODO",
+    "date": {
+      "date": {
+        "year": 2025,
+        "month": 9,
+        "day": 29
+      },
+      "time": {
+        "hour": 22,
+        "minute": 57,
+        "second": 36,
+        "nano": 897467975
       }
     },
     "isImported": false
