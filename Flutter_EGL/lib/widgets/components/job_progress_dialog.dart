@@ -204,9 +204,10 @@ Future<void> showJobProgressOverlayDialog({
                 try { await windowManager.setProgressBar(norm01); } catch (_) {}
               }
               // Auto-close on error or when we clearly reach 100% or receive a done/cancel phase
-              final ph = ev.phase.toLowerCase();
+              final state = ev.phase.toLowerCase();
+              print("State: $state");
               final msgLower = ev.message.toLowerCase();
-              final isErrorPhase = ph.contains('error') || ph.contains('fail');
+              final isErrorPhase = state.contains('error') || state.contains('fail');
               final isExplicitDownloadError = msgLower.contains('unable to download asset');
               if (isErrorPhase || isExplicitDownloadError) {
                 hadError = true;
@@ -219,7 +220,11 @@ Future<void> showJobProgressOverlayDialog({
               }
               // Do not auto-close merely on reaching 100% progress; some jobs (e.g., download -> import)
               // legitimately continue with additional phases after download completes.
-              if (ph == 'done' || ph == 'completed' || ph == 'cancel' || ph == 'cancelled') {
+              // However, many backends emit a final user-friendly message like "Download complete" without a
+              // standardized phase. In that case, go ahead and close the dialog so the UI can proceed.
+              final isTerminalMessage = msgLower.contains('download complete') || msgLower.contains('download completed');
+              final isTerminalPhase = state == 'done' || state == 'completed' || state == 'cancel' || state == 'cancelled' || state.contains('download:complete') || state.contains('download_complete');
+              if (isTerminalPhase || isTerminalMessage) {
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
                 if (rootNav.canPop()) {
                   rootNav.pop();

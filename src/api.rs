@@ -659,11 +659,11 @@ pub async fn list_unreal_engines(query: web::Query<std::collections::HashMap<Str
 ///
 /// Query parameters:
 /// - project: Name of the project folder, a project directory path, or a .uproject file path.
-/// - version: Engine version to use (e.g., 5.3 or 5.3.2). Exact match is preferred; prefix match is accepted.
+/// - version: Optional engine version to use (e.g., 5.3 or 5.3.2). If omitted, the server reads EngineAssociation from the .uproject and picks the matching engine. Exact match is preferred; prefix match is accepted.
 /// - engine_base: Optional base directory to search for engines (defaults to $HOME/UnrealEngines).
 /// - projects_base: Optional base directory containing UE projects when using a project name (defaults to $HOME/Documents/Unreal Projects).
 ///
-/// Required fields: project, version. Optional: engine_base, projects_base.
+/// Required fields: project. Optional: version, engine_base, projects_base.
 ///
 /// Example requests:
 /// - Using only the project name (uses default projects_base):
@@ -696,12 +696,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
             return HttpResponse::BadRequest().body("Missing required query parameter: project (name, path to .uproject, or project dir)");
         }
     };
-    let version_param = match query.get("version") {
-        Some(v) => v.clone(),
-        None => {
-            return HttpResponse::BadRequest().body("Missing required query parameter: version (e.g., 5.3.2 or 5.3)");
-        }
-    };
+    let version_param_opt = query.get("version").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let engine_base = query.get("engine_base").map(|s| PathBuf::from(s)).unwrap_or_else(utils::default_unreal_engines_dir);
     let projects_base = query
         .get("projects_base")
@@ -710,7 +705,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
     println!("Project Base: {}", projects_base.to_string_lossy());
     println!("Raw Project: {}", raw_project);
     println!("Engine Base: {}", engine_base.to_string_lossy());
-    println!("Version: {}", version_param);
+    println!("Version (requested): {}", version_param_opt.clone().unwrap_or_else(|| "<auto> from .uproject".to_string()));
 
     // First try to resolve as path/dir; if that fails, treat `raw_project` as a project name
     let project_path = match utils::resolve_project_path(&raw_project) {
@@ -750,6 +745,35 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
         }
     };
 
+    // Determine requested version: either from query or from the project's EngineAssociation
+    let requested_version = if let Some(v) = version_param_opt.clone() { v } else {
+        let mut buf = String::new();
+        match fs::File::open(&project_path).and_then(|mut f| f.read_to_string(&mut buf).map(|_| ())) {
+            Ok(()) => {
+                match serde_json::from_str::<serde_json::Value>(&buf)
+                    .ok()
+                    .and_then(|v| v.get("EngineAssociation").and_then(|x| x.as_str()).map(|s| s.to_string()))
+                {
+                    Some(assoc) => {
+                        match crate::utils::resolve_engine_association_to_mm(&assoc) {
+                            Some(mm) => mm,
+                            None => {
+                                return HttpResponse::NotFound().body("Could not resolve EngineAssociation from project to a version");
+                            }
+                        }
+                    }
+                    None => {
+                        return HttpResponse::BadRequest().body("Project .uproject missing EngineAssociation and no version provided");
+                    }
+                }
+            }
+            Err(_) => {
+                return HttpResponse::BadRequest().body("Failed to read project .uproject file to determine engine version");
+            }
+        }
+    };
+    println!("Requested engine version (resolved): {}", requested_version);
+
     // Discover engines
     let mut engines: Vec<models::UnrealEngineInfo> = Vec::new();
     if engine_base.is_dir() {
@@ -774,10 +798,10 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
         return HttpResponse::NotFound().body("No Unreal Engine installations found in engine_base");
     }
 
-    let chosen = match utils::pick_engine_for_version(&engines, &version_param) {
+    let chosen = match utils::pick_engine_for_version(&engines, &requested_version) {
         Some(e) => e,
         None => {
-            return HttpResponse::NotFound().body("Requested version not found among discovered engines");
+            return HttpResponse::NotFound().body(format!("Requested version '{}' not found among discovered engines", requested_version));
         }
     };
 
@@ -1234,6 +1258,8 @@ pub async fn set_unreal_project_version(body: web::Json<models::SetProjectEngine
 pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRequest>) -> impl Responder {
     let req = body.into_inner();
     let job_id = req.job_id.clone();
+
+
     utils::emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
 
     // If Fab identifiers are provided, reuse the same download flow as /import-asset to ensure the sample/template is present
@@ -1244,18 +1270,18 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
         let path = web::Path::from((namespace.clone(), asset_id.clone(), artifact_id.clone()));
         let query: Query<HashMap<String, String>> = web::Query(q);
         match download_asset_handler(path, query).await {
-            Err(resp) => {
-                if !resp.status().is_success() { return resp; }
+            Err(err_response) => {
+                if !err_response.status().is_success() { return err_response; }
                 if utils::is_cancelled(job_id.as_deref()) { if let Some(ref j) = job_id { utils::clear_cancel(j); } return HttpResponse::Ok().body("cancelled"); }
             }
-            Ok(resp) => { return resp; }
+            Ok(response) => { return response; }
         }
     }
 
     // Validate inputs
-    let template_empty = req.template_project.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
-    let asset_empty = req.asset_name.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
-    if template_empty && asset_empty {
+    let template_path_empty = req.template_project.as_deref().map(|path| path.trim().is_empty()).unwrap_or(true);
+    let asset_name_emtpy = req.asset_name.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+    if template_path_empty && asset_name_emtpy {
         return HttpResponse::BadRequest().body("Provide either template_project (path/dir) or asset_name (under downloads/)");
     }
     if req.output_dir.trim().is_empty() { return HttpResponse::BadRequest().body("output_dir is required"); }
@@ -1299,16 +1325,13 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
         engines[0].clone()
     };
 
-    // Locate UnrealEditor binary (Linux path). Add Windows/macOS variants as needed.
-    // TODO remove all but Linux bin
-    let editor_bin_candidates = [
-        engine_path.join("Engine/Binaries/Linux/UnrealEditor"),
-        engine_path.join("Engine/Binaries/Linux/UnrealEditor.exe"), // in case of WSL path
-        engine_path.join("Engine/Binaries/Win64/UnrealEditor.exe"),
-        engine_path.join("Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"),
-    ];
-    let editor_path = editor_bin_candidates.iter().find(|p| p.exists()).cloned();
-    let editor_path = match editor_path { Some(p) => p, None => return HttpResponse::BadRequest().body("Unable to locate UnrealEditor binary under engine_path") };
+    // Locate Unreal Editor binary for the selected engine (supports UE5 and UE4 names)
+    let editor_path = match utils::find_editor_binary(&engine_path) {
+        Some(p) => p,
+        None => {
+            return HttpResponse::BadRequest().body("Unable to locate Unreal Editor binary under engine_path (tried UE5 'UnrealEditor' and UE4 'UE4Editor')");
+        }
+    };
 
     // Resolve template path from either template_project or asset_name under downloads/
     fn trim_quotes_and_expand_home(s: &str) -> String {

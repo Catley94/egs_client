@@ -103,9 +103,13 @@ class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject,
                         if (_opening) return;
                         setState(() => _opening = true);
                         try {
+                          // Prefer the project's specific engine version (badge)
                           String? version;
-                          if (widget.engines.isNotEmpty) {
-                            // choose last (assumed highest version)
+                          final ev = widget.engineVersionOf(p);
+                          if (ev.isNotEmpty) {
+                            version = ev;
+                          } else if (widget.engines.isNotEmpty) {
+                            // Fallback: choose last (assumed highest version)
                             final last = widget.engines.last;
                             final v = widget.engineVersionOfEngine(last);
                             version = v.isNotEmpty ? v : null;
@@ -113,7 +117,7 @@ class _ProjectsListState<TProject, TEngine> extends State<ProjectsList<TProject,
                           if (version == null) {
                             if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('No installed Unreal Engine version found')),
+                              const SnackBar(content: Text('No installed Unreal Engine version found for this project')),
                             );
                           } else {
                             final path = widget.projectPathOf(p);
