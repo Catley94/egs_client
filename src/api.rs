@@ -1259,414 +1259,870 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
     let req = body.into_inner();
     let job_id = req.job_id.clone();
 
-
     utils::emit_event(job_id.as_deref(), "create:start", format!("Creating project {}", req.project_name), None, None);
 
-    // If Fab identifiers are provided, reuse the same download flow as /import-asset to ensure the sample/template is present
-    if let (Some(namespace), Some(asset_id), Some(artifact_id)) = (req.namespace.clone(), req.asset_id.clone(), req.artifact_id.clone()) {
-        let mut q: HashMap<String, String> = HashMap::new();
-        if let Some(ref j) = job_id { q.insert("jobId".to_string(), j.clone()); }
-        if let Some(ref ue) = req.ue { if !ue.trim().is_empty() { q.insert("ue".to_string(), ue.trim().to_string()); } }
-        let path = web::Path::from((namespace.clone(), asset_id.clone(), artifact_id.clone()));
-        let query: Query<HashMap<String, String>> = web::Query(q);
-        match download_asset_handler(path, query).await {
-            Err(err_response) => {
-                if !err_response.status().is_success() { return err_response; }
-                if utils::is_cancelled(job_id.as_deref()) { if let Some(ref j) = job_id { utils::clear_cancel(j); } return HttpResponse::Ok().body("cancelled"); }
-            }
-            Ok(response) => { return response; }
-        }
+    // Handle Fab asset download if identifiers are provided
+    if let Some(response) = handle_fab_download(&req, &job_id).await {
+        return response;
     }
 
-    // Validate inputs
-    let template_path_empty = req.template_project.as_deref().map(|path| path.trim().is_empty()).unwrap_or(true);
-    let asset_name_emtpy = req.asset_name.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
-    if template_path_empty && asset_name_emtpy {
-        return HttpResponse::BadRequest().body("Provide either template_project (path/dir) or asset_name (under downloads/)");
-    }
-    if req.output_dir.trim().is_empty() { return HttpResponse::BadRequest().body("output_dir is required"); }
-    if req.project_name.trim().is_empty() { return HttpResponse::BadRequest().body("project_name is required"); }
-
-    let project_type = req.project_type.unwrap_or_else(|| "bp".to_string()).to_lowercase();
-    if project_type != "bp" && project_type != "cpp" {
-        return HttpResponse::BadRequest().body("project_type must be 'bp' or 'cpp'");
+    // Validate all inputs
+    if let Err(response) = validate_request(&req) {
+        return response;
     }
 
-    // Resolve engine path: prefer explicit engine_path; else if ue provided, pick matching engine; else pick latest
-    let engine_path = if let Some(p) = req.engine_path.clone() { PathBuf::from(p) } else if let Some(ue) = req.ue.clone() {
-        let base = utils::default_unreal_engines_dir();
-        let mut engines: Vec<models::UnrealEngineInfo> = Vec::new();
-        if base.is_dir() {
-            if let Ok(entries) = fs::read_dir(&base) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_dir() && p.join("Engine").join("Binaries").exists() {
-                        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                        let version = utils::read_build_version(&p)
-                            .or_else(|| utils::parse_version_from_name(&name))
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let editor_path = utils::find_editor_binary(&p).map(|pp| pp.to_string_lossy().to_string());
-                        engines.push(models::UnrealEngineInfo { name, version, path: p.to_string_lossy().to_string(), editor_path });
-                    }
-                }
-            }
-        }
-        match utils::pick_engine_for_version(&engines, &ue) {
-            Some(info) => PathBuf::from(info.path.clone()),
-            None => return HttpResponse::NotFound().body("Requested UE version not found among discovered engines"),
-        }
-    } else {
-        let base = utils::default_unreal_engines_dir();
-        // pick the first engine when sorted descending by version string
-        let mut engines: Vec<PathBuf> = Vec::new();
-        if base.is_dir() { if let Ok(entries) = fs::read_dir(&base) { for e in entries.flatten() { let p = e.path(); if p.is_dir() && p.join("Engine").exists() { engines.push(p); } } } }
-        if engines.is_empty() { return HttpResponse::BadRequest().body("engine_path not provided and no engines found in default location"); }
-        engines.sort_by(|a,b| b.file_name().unwrap_or_default().cmp(a.file_name().unwrap_or_default()));
-        engines[0].clone()
+    // Resolve engine path
+    let engine_path = match resolve_engine_path(&req) {
+        Ok(path) => path,
+        Err(response) => return response,
     };
 
-    // Locate Unreal Editor binary for the selected engine (supports UE5 and UE4 names)
+    // Locate editor binary
     let editor_path = match utils::find_editor_binary(&engine_path) {
         Some(p) => p,
-        None => {
-            return HttpResponse::BadRequest().body("Unable to locate Unreal Editor binary under engine_path (tried UE5 'UnrealEditor' and UE4 'UE4Editor')");
-        }
+        None => return HttpResponse::BadRequest().body(
+            "Unable to locate Unreal Editor binary under engine_path (tried UE5 'UnrealEditor' and UE4 'UE4Editor')"
+        ),
     };
 
-    // Resolve template path from either template_project or asset_name under downloads/
-    fn trim_quotes_and_expand_home(s: &str) -> String {
-        let mut t = s.trim().to_string();
-        // Trim matching leading/trailing single or double quotes
-        if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
-            t = t[1..t.len()-1].to_string();
-        }
-        // Expand $HOME and leading ~
-        if let Ok(home) = std::env::var("HOME") {
-            if t.starts_with("~/") { t = t.replacen("~", &home, 1); }
-            if t.contains("$HOME") { t = t.replace("$HOME", &home); }
-        }
-        t
-    }
-
-    // Breadth-first search for .uproject, preferring shallow matches, skipping non-project data dirs
-    fn find_uproject_bfs(start: &Path, max_depth: usize) -> Option<PathBuf> {
-        use std::collections::VecDeque;
-        if max_depth == 0 { return None; }
-        let mut q: VecDeque<(PathBuf, usize)> = VecDeque::new();
-        q.push_back((start.to_path_buf(), 0));
-        while let Some((dir, depth)) = q.pop_front() {
-            if dir.is_file() {
-                if dir.extension().and_then(|s| s.to_str()) == Some("uproject") { return Some(dir); }
-                continue;
-            }
-            if !dir.is_dir() { continue; }
-            // 1) Check this directory for any .uproject files first (non-recursive)
-            if let Ok(entries) = fs::read_dir(&dir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_file() {
-                        if p.extension().and_then(|s| s.to_str()) == Some("uproject") { return Some(p); }
-                    }
-                }
-            }
-            if depth >= max_depth { continue; }
-            // 2) Enqueue child directories, skipping well-known non-project dirs
-            if let Ok(entries) = fs::read_dir(&dir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                            let lname = name.to_ascii_lowercase();
-                            if lname == "content" || lname == ".git" || lname == ".svn" { continue; }
-                        }
-                        q.push_back((p, depth + 1));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    let template_path: Option<PathBuf> = if let Some(tp) = req.template_project.as_deref() {
-        let tp = tp.trim();
-        if tp.is_empty() { None } else {
-            let candidate = PathBuf::from(trim_quotes_and_expand_home(tp));
-            if candidate.is_dir() { find_uproject_bfs(&candidate, 5) } else { Some(candidate) }
-        }
-    } else if let Some(name) = req.asset_name.as_ref() {
-        // Resolve downloads base robustly: try ./downloads relative to CWD, else relative to executable dir
-        let mut downloads_base = PathBuf::from("downloads");
-        if !downloads_base.exists() {
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(exe_dir) = exe.parent() {
-                    let alt = exe_dir.join("downloads");
-                    if alt.exists() { downloads_base = alt; }
-                }
-            }
-        }
-        // If the exact asset_name folder doesn't exist, try case-insensitive match among children
-        let mut asset_dir = downloads_base.join(name);
-        if !asset_dir.exists() {
-            if downloads_base.is_dir() {
-                if let Ok(entries) = fs::read_dir(&downloads_base) {
-                    for e in entries.flatten() {
-                        let p = e.path();
-                        if p.is_dir() {
-                            if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                                if fname.eq_ignore_ascii_case(name) {
-                                    asset_dir = p;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Determine the directory to search based on requested UE version (if any)
-        let mut search_dir = asset_dir.clone();
-        if let Some(ref ue) = req.ue {
-            let mm = ue.trim();
-            if !mm.is_empty() {
-                let candidate = asset_dir.join(mm);
-                if candidate.exists() {
-                    search_dir = candidate;
-                }
-            }
-        }
-        // If missing or incomplete, attempt to (re)download by name first.
-        // When a UE version is specified, treat a completed version subfolder as complete as well.
-        let mut needs_download = !asset_dir.exists() || !utils::is_download_complete(&asset_dir);
-        if let Some(ref ue) = req.ue {
-            let mm = ue.trim();
-            if !mm.is_empty() {
-                let version_dir = asset_dir.join(mm);
-                if version_dir.exists() && utils::is_download_complete(&version_dir) {
-                    needs_download = false; // already downloaded for this version
-                }
-            }
-        }
-        if needs_download {
-            utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloading '{}'", name), Some(0.0), None);
-            match utils::ensure_asset_downloaded_by_name(name, job_id.as_deref(), "create:downloading").await {
-                Ok(p) => { asset_dir = p.clone(); search_dir = if let Some(ref ue) = req.ue { let mm = ue.trim(); if !mm.is_empty() { let c = p.join(mm); if c.exists() { c } else { p } } else { p } } else { p }; utils::emit_event(job_id.as_deref(), "create:downloading", format!("Downloaded '{}'", name), Some(100.0), None); },
-                Err(err) => {
-                    eprintln!("{}", err);
-                    utils::emit_event(job_id.as_deref(), "create:error", format!("Failed to download '{}'", name), None, None);
-                    return HttpResponse::NotFound().body(format!("{}", err));
-                }
-            }
-        }
-        // Log what base/asset dir we ended up with for diagnostics
-        println!("Searching for .uproject under: {}", search_dir.to_string_lossy());
-        find_uproject_bfs(&search_dir, 8)
-    } else { None };
-
-    let template_path = match template_path {
-        Some(p) if p.extension().and_then(|s| s.to_str()) == Some("uproject") => {
-            println!("Using template .uproject: {}", p.to_string_lossy());
-            p
-        },
-        _ => return HttpResponse::BadRequest().body("Unable to resolve a .uproject from template_project/asset_name. Tips: ensure there is a .uproject inside the selected folder; if using asset_name, verify the asset exists under downloads/ (case-insensitive match is supported) and that the .uproject isn’t packaged deep inside nested 'data' or 'Content' folders."),
+    // Resolve template .uproject file
+    let template_path = match resolve_template_path(&req, &job_id).await {
+        Ok(path) => path,
+        Err(response) => return response,
     };
 
-    // Canonicalize template_path to an absolute path where possible
-    let template_path = std::fs::canonicalize(&template_path)
-        .unwrap_or_else(|_| std::env::current_dir().map(|cwd| cwd.join(&template_path)).unwrap_or(template_path));
+    // Setup output directory
+    let (out_dir, new_project_dir) = match setup_output_directory(&req) {
+        Ok(dirs) => dirs,
+        Err(response) => return response,
+    };
 
-    // Normalize and absolutize out_dir (ensure it exists before canonicalize)
-    let out_dir = PathBuf::from(trim_quotes_and_expand_home(&req.output_dir));
-    if !out_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&out_dir) {
-            return HttpResponse::InternalServerError().body(format!("Failed to create output_dir: {}", e));
-        }
-    }
-    let out_dir = std::fs::canonicalize(&out_dir)
-        .unwrap_or_else(|_| std::env::current_dir().map(|cwd| cwd.join(&out_dir)).unwrap_or(out_dir));
-    let new_project_dir = out_dir.join(&req.project_name);
-
-    // Ensure destination project directory exists before copying
-    if let Err(e) = fs::create_dir_all(&new_project_dir) {
-        return HttpResponse::InternalServerError().body(format!("Failed to create new project directory: {}", e));
-    }
-
-    // Instead of using -CopyProject (not valid), copy the template project folder and open the new project.
-    // Determine the template project root (directory that contains the .uproject)
     let template_dir = template_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    // Build list of exclusions
-    let exclude_names = ["Binaries", "DerivedDataCache", "Intermediate", "Saved", ".git", ".svn", ".vs"]; 
-
-    // Prepare dry-run summary string
-    let mut actions: Vec<String> = Vec::new();
-    actions.push(format!("Copy '{}' -> '{}' (excluding {:?})", template_dir.to_string_lossy(), new_project_dir.to_string_lossy(), exclude_names));
-
-    // Perform copy with progress logging
-    // Pre-count total files to be copied (respecting exclusions)
-    let mut total_copy_files: usize = 0;
-    for entry in walkdir::WalkDir::new(&template_dir).into_iter().filter_map(|e| e.ok()) {
-        let src_path = entry.path();
-        let rel = match src_path.strip_prefix(&template_dir) { Ok(r) => r, Err(_) => continue };
-        if rel.as_os_str().is_empty() { continue; }
-        if let Some(first) = rel.components().next() {
-            use std::path::Component;
-            let name = match first { Component::Normal(os) => os.to_string_lossy().to_string(), _ => String::new() };
-            if exclude_names.iter().any(|ex| name.eq_ignore_ascii_case(ex)) { continue; }
-        }
-        if entry.file_type().is_file() { total_copy_files += 1; }
+    // Handle dry run
+    if req.dry_run.unwrap_or(false) {
+        return handle_dry_run(&req, &template_dir, &new_project_dir, &editor_path, &template_path);
     }
 
-    println!("[copy-start] {} -> {} ({} files, excluding {:?})",
-        template_dir.to_string_lossy(), new_project_dir.to_string_lossy(), total_copy_files, exclude_names);
-    utils::emit_event(job_id.as_deref(), "create:copying", format!("Creating new project at {}", new_project_dir.to_string_lossy()), Some(0.0), None);
+    // Copy project files
+    let (copied_files, skipped_files) = match copy_project_files(
+        &template_dir,
+        &new_project_dir,
+        &req.project_name,
+        &template_path,
+        &job_id,
+    ) {
+        Ok(counts) => counts,
+        Err(response) => return response,
+    };
 
-    let mut copied_files = 0usize;
-    let mut skipped_files = 0usize;
-    let mut last_logged_percent: u32 = 0;
-    let mut last_log_instant = Instant::now();
-
-    let walker = walkdir::WalkDir::new(&template_dir).into_iter();
-    for entry in walker.filter_map(|e| e.ok()) {
-        let src_path = entry.path();
-        let rel = match src_path.strip_prefix(&template_dir) { Ok(r) => r, Err(_) => continue };
-        if rel.as_os_str().is_empty() { continue; }
-        // Skip excluded top-level dirs and their contents
-        if let Some(first) = rel.components().next() {
-            use std::path::Component;
-            let name = match first { Component::Normal(os) => os.to_string_lossy().to_string(), _ => String::new() };
-            if exclude_names.iter().any(|ex| name.eq_ignore_ascii_case(ex)) { skipped_files += 1; continue; }
-        }
-        let dst_path = new_project_dir.join(rel);
-        if entry.file_type().is_dir() {
-            if let Err(e) = fs::create_dir_all(&dst_path) { return HttpResponse::InternalServerError().body(format!("Failed to create dir {}: {}", dst_path.to_string_lossy(), e)); }
-        } else if entry.file_type().is_file() {
-            // If this is the template .uproject, we will rename its filename to match the new project
-            let mut final_dst = dst_path.clone();
-            if src_path.extension().and_then(|s| s.to_str()) == Some("uproject") {
-                final_dst = new_project_dir.join(format!("{}.uproject", req.project_name));
-            }
-            if let Some(parent) = final_dst.parent() { if let Err(e) = fs::create_dir_all(parent) { return HttpResponse::InternalServerError().body(format!("Failed to create parent dir {}: {}", parent.to_string_lossy(), e)); } }
-            if let Err(e) = fs::copy(src_path, &final_dst) { return HttpResponse::InternalServerError().body(format!("Failed to copy {} -> {}: {}", src_path.to_string_lossy(), final_dst.to_string_lossy(), e)); }
-            copied_files += 1;
-
-            if total_copy_files > 0 {
-                let percent = ((copied_files as f64 / total_copy_files as f64) * 100.0).floor() as u32;
-                if percent >= last_logged_percent + 5 || last_log_instant.elapsed().as_secs() >= 2 {
-                    println!("[copy-progress] {}/{} ({}%) - {}", copied_files, total_copy_files, percent, rel.to_string_lossy());
-                    last_logged_percent = percent;
-                    last_log_instant = Instant::now();
-                    utils::emit_event(job_id.as_deref(), "create:copying", format!("{} / {}", copied_files, total_copy_files), Some(percent as f32), None);
-                }
-            }
-        } else if entry.file_type().is_symlink() {
-            // Skip symlinks to avoid unexpected behavior
-            skipped_files += 1;
-        }
-    }
-
-    println!("[copy-finish] Copied {} files ({} skipped) to {}",
-        copied_files, skipped_files, new_project_dir.to_string_lossy());
-    utils::emit_event(job_id.as_deref(), "create:complete", format!("Project created at {}", new_project_dir.to_string_lossy()), Some(100.0), None);
-
-    // Determine new .uproject path
-    let new_uproject = new_project_dir.join(format!("{}.uproject", req.project_name));
-    // If the rename logic didn’t find any .uproject to copy (rare), fall back to copying the same name
-    if !new_uproject.exists() {
-        let src_name = template_path.file_name().unwrap_or_default();
-        let fallback = new_project_dir.join(src_name);
-        if !fallback.exists() {
-            if let Err(e) = fs::copy(&template_path, &fallback) { return HttpResponse::InternalServerError().body(format!("Failed to copy template .uproject: {}", e)); }
-        }
-    }
-
-    // Optionally update project name in .uproject file if a Name field exists
-    let target_uproject = if new_uproject.exists() { new_uproject.clone() } else { new_project_dir.join(template_path.file_name().unwrap_or_default()) };
-    if let Ok(json_text) = fs::read_to_string(&target_uproject) {
-        if json_text.contains("\"FileVersion\"") || json_text.contains("\"EngineAssociation\"") {
-            // Best-effort: update the FriendlyName or DisplayedName if present
-            let updated = json_text
-                .replace("\"DisplayName\":\"", &format!("\"DisplayName\":\"{}", req.project_name))
-                .replace("\"FriendlyName\":\"", &format!("\"FriendlyName\":\"{}", req.project_name));
-            if updated != json_text {
-                if let Err(e) = fs::write(&target_uproject, updated) { eprintln!("Warning: failed to update project name in .uproject: {}", e); }
-            }
-        }
-    }
-
-    // If a UE version was specified, set EngineAssociation in the created .uproject to its major.minor form
-    if let Some(mut ue) = req.ue.clone() {
-        ue = ue.trim().to_string();
-        if ue.starts_with("UE_") { ue = ue[3..].to_string(); }
-        let parts: Vec<&str> = ue.split('.').collect();
-        if parts.len() >= 2 {
-            let mm = format!("{}.{}", parts[0].trim(), parts[1].trim());
-            if let Ok(text) = fs::read_to_string(&target_uproject) {
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(mut v) => {
-                        if let Some(obj) = v.as_object_mut() {
-                            obj.insert("EngineAssociation".to_string(), serde_json::Value::String(mm.clone()));
-                            if let Ok(pretty) = serde_json::to_string_pretty(&v) {
-                                if let Err(e) = fs::write(&target_uproject, pretty) { eprintln!("Warning: failed to write EngineAssociation: {}", e); }
-                            }
-                        }
-                    }
-                    Err(e) => { eprintln!("Warning: .uproject JSON parse failed when setting EngineAssociation: {}", e); }
-                }
-            }
-        }
-    }
-
-    // Build open command: UnrealEditor <NewProject.uproject> [-NoCompile]
-    let mut cmd = std::process::Command::new(&editor_path);
-    cmd.arg(&target_uproject);
-    if project_type == "bp" { cmd.arg("-NoCompile"); }
-    let command_preview = format!("{} {}{}",
-        editor_path.to_string_lossy(),
-        target_uproject.to_string_lossy(),
-        if project_type == "bp" { " -NoCompile" } else { "" }
+    utils::emit_event(
+        job_id.as_deref(),
+        "create:complete",
+        format!("Project created at {}", new_project_dir.to_string_lossy()),
+        Some(100.0),
+        None,
     );
+
+    // Update .uproject metadata
+    let target_uproject = finalize_uproject(&new_project_dir, &req, &template_path);
+
+    // Build and optionally execute open command
+    let command_preview = build_editor_command(&editor_path, &target_uproject, &req.project_type);
     println!("UnrealEditor: {}", editor_path.to_string_lossy());
     println!("Open Command: {}", command_preview);
 
-    if req.dry_run.unwrap_or(false) {
-        actions.push(format!("Open with: {}", command_preview));
-        let resp = models::CreateUnrealProjectResponse { ok: true, message: format!("Dry run: would copy {} files (skipped {}), then open project{}", copied_files, skipped_files, if req.open_after_create.unwrap_or(false) { " (open_after_create=true)" } else { "" }), command: actions.join(" | "), project_path: Some(new_project_dir.to_string_lossy().to_string()) };
-        return HttpResponse::Ok().json(resp);
+    execute_project_open(&req, copied_files, skipped_files, command_preview, &new_project_dir)
+}
+
+// ========== Helper Functions ==========
+
+async fn handle_fab_download(
+    req: &models::CreateUnrealProjectRequest,
+    job_id: &Option<String>,
+) -> Option<HttpResponse> {
+    let (namespace, asset_id, artifact_id) = match (&req.namespace, &req.asset_id, &req.artifact_id) {
+        (Some(ns), Some(aid), Some(arid)) => (ns.clone(), aid.clone(), arid.clone()),
+        _ => return None,
+    };
+
+    let mut q: HashMap<String, String> = HashMap::new();
+    if let Some(ref j) = job_id {
+        q.insert("jobId".to_string(), j.clone());
+    }
+    if let Some(ref ue) = req.ue {
+        if !ue.trim().is_empty() {
+            q.insert("ue".to_string(), ue.trim().to_string());
+        }
     }
 
-    // Decide whether to open after create (default false)
-    let open_after = req.open_after_create.unwrap_or(false);
-    if open_after {
-        match cmd.spawn() {
-            Ok(_child) => {
-                let resp = models::CreateUnrealProjectResponse {
-                    ok: true,
-                    message: format!("Project created ({} files, {} skipped). Unreal Editor is launching...", copied_files, skipped_files),
-                    command: command_preview,
-                    project_path: Some(new_project_dir.to_string_lossy().to_string()),
-                };
-                return HttpResponse::Ok().json(resp);
+    let path = web::Path::from((namespace, asset_id, artifact_id));
+    let query = web::Query(q);
+
+    match download_asset_handler(path, query).await {
+        Err(err_response) => {
+            if !err_response.status().is_success() {
+                return Some(err_response);
             }
-            Err(e) => {
-                let resp = models::CreateUnrealProjectResponse {
-                    ok: true, // project created successfully; opening is optional
-                    message: format!("Project created ({} files, {} skipped). Failed to launch UnrealEditor: {}", copied_files, skipped_files, e),
-                    command: command_preview,
-                    project_path: Some(new_project_dir.to_string_lossy().to_string()),
-                };
-                return HttpResponse::Ok().json(resp);
+            if utils::is_cancelled(job_id.as_deref()) {
+                if let Some(ref j) = job_id {
+                    utils::clear_cancel(j);
+                }
+                return Some(HttpResponse::Ok().body("cancelled"));
             }
         }
+        Ok(response) => return Some(response),
+    }
+
+    None
+}
+
+fn validate_request(req: &models::CreateUnrealProjectRequest) -> Result<(), HttpResponse> {
+    let template_empty = req.template_project.as_deref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+    let asset_empty = req.asset_name.as_deref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+
+    if template_empty && asset_empty {
+        return Err(HttpResponse::BadRequest().body(
+            "Provide either template_project (path/dir) or asset_name (under downloads/)"
+        ));
+    }
+    if req.output_dir.trim().is_empty() {
+        return Err(HttpResponse::BadRequest().body("output_dir is required"));
+    }
+    if req.project_name.trim().is_empty() {
+        return Err(HttpResponse::BadRequest().body("project_name is required"));
+    }
+
+    let project_type = req.project_type.as_deref().unwrap_or("bp").to_lowercase();
+    if project_type != "bp" && project_type != "cpp" {
+        return Err(HttpResponse::BadRequest().body("project_type must be 'bp' or 'cpp'"));
+    }
+
+    Ok(())
+}
+
+fn resolve_engine_path(req: &models::CreateUnrealProjectRequest) -> Result<PathBuf, HttpResponse> {
+    // If explicit engine_path provided, use it
+    if let Some(p) = &req.engine_path {
+        return Ok(PathBuf::from(p));
+    }
+
+    let base = utils::default_unreal_engines_dir();
+
+    // If UE version specified, find matching engine
+    if let Some(ue) = &req.ue {
+        let engines = discover_engines(&base);
+        return match utils::pick_engine_for_version(&engines, ue) {
+            Some(info) => Ok(PathBuf::from(info.path.clone())),
+            None => Err(HttpResponse::NotFound().body(
+                "Requested UE version not found among discovered engines"
+            )),
+        };
+    }
+
+    // Otherwise, pick latest engine
+    select_latest_engine(&base)
+}
+
+fn discover_engines(base: &Path) -> Vec<models::UnrealEngineInfo> {
+    let mut engines = Vec::new();
+    if !base.is_dir() {
+        return engines;
+    }
+
+    if let Ok(entries) = fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() || !p.join("Engine").join("Binaries").exists() {
+                continue;
+            }
+
+            let name = p.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let version = utils::read_build_version(&p)
+                .or_else(|| utils::parse_version_from_name(&name))
+                .unwrap_or_else(|| "unknown".to_string());
+            let editor_path = utils::find_editor_binary(&p)
+                .map(|pp| pp.to_string_lossy().to_string());
+
+            engines.push(models::UnrealEngineInfo {
+                name,
+                version,
+                path: p.to_string_lossy().to_string(),
+                editor_path,
+            });
+        }
+    }
+    engines
+}
+
+fn select_latest_engine(base: &Path) -> Result<PathBuf, HttpResponse> {
+    if !base.is_dir() {
+        return Err(HttpResponse::BadRequest().body(
+            "engine_path not provided and no engines found in default location"
+        ));
+    }
+
+    let mut engines: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join("Engine").exists() {
+                engines.push(p);
+            }
+        }
+    }
+
+    if engines.is_empty() {
+        return Err(HttpResponse::BadRequest().body(
+            "engine_path not provided and no engines found in default location"
+        ));
+    }
+
+    engines.sort_by(|a, b| {
+        b.file_name()
+            .unwrap_or_default()
+            .cmp(a.file_name().unwrap_or_default())
+    });
+
+    Ok(engines[0].clone())
+}
+
+async fn resolve_template_path(
+    req: &models::CreateUnrealProjectRequest,
+    job_id: &Option<String>,
+) -> Result<PathBuf, HttpResponse> {
+    let template_path = if let Some(tp) = &req.template_project {
+        resolve_from_template_project(tp)?
+    } else if let Some(name) = &req.asset_name {
+        resolve_from_asset_name(name, req, job_id).await?
     } else {
+        return Err(HttpResponse::BadRequest().body("No template source provided"));
+    };
+
+    match template_path {
+        Some(p) if p.extension().and_then(|s| s.to_str()) == Some("uproject") => {
+            println!("Using template .uproject: {}", p.to_string_lossy());
+
+            // Canonicalize to absolute path
+            Ok(std::fs::canonicalize(&p).unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(&p))
+                    .unwrap_or(p)
+            }))
+        }
+        _ => Err(HttpResponse::BadRequest().body(
+            "Unable to resolve a .uproject from template_project/asset_name. \
+             Tips: ensure there is a .uproject inside the selected folder; if using asset_name, \
+             verify the asset exists under downloads/ (case-insensitive match is supported) \
+             and that the .uproject isn't packaged deep inside nested 'data' or 'Content' folders."
+        )),
+    }
+}
+
+fn resolve_from_template_project(tp: &str) -> Result<Option<PathBuf>, HttpResponse> {
+    let tp = tp.trim();
+    if tp.is_empty() {
+        return Ok(None);
+    }
+
+    let candidate = PathBuf::from(trim_quotes_and_expand_home(tp));
+    Ok(if candidate.is_dir() {
+        find_uproject_bfs(&candidate, 5)
+    } else {
+        Some(candidate)
+    })
+}
+
+async fn resolve_from_asset_name(
+    name: &str,
+    req: &models::CreateUnrealProjectRequest,
+    job_id: &Option<String>,
+) -> Result<Option<PathBuf>, HttpResponse> {
+    let downloads_base = find_downloads_directory();
+    let mut asset_dir = find_asset_directory(&downloads_base, name);
+
+    // Determine search directory based on UE version
+    let mut search_dir = asset_dir.clone();
+    if let Some(ref ue) = req.ue {
+        let ue_trimmed = ue.trim();
+        if !ue_trimmed.is_empty() {
+            let candidate = asset_dir.join(ue_trimmed);
+            if candidate.exists() {
+                search_dir = candidate;
+            }
+        }
+    }
+
+    // Check if download is needed
+    if needs_download(&asset_dir, &req.ue) {
+        asset_dir = download_template_asset(name, &req.ue, job_id.as_deref()).await?;
+        search_dir = determine_search_dir(&asset_dir, &req.ue);
+    }
+
+    println!("Searching for .uproject under: {}", search_dir.to_string_lossy());
+    Ok(find_uproject_bfs(&search_dir, 8))
+}
+
+fn find_downloads_directory() -> PathBuf {
+    let mut downloads_base = PathBuf::from("downloads");
+    if !downloads_base.exists() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let alt = exe_dir.join("downloads");
+                if alt.exists() {
+                    downloads_base = alt;
+                }
+            }
+        }
+    }
+    downloads_base
+}
+
+fn find_asset_directory(downloads_base: &Path, name: &str) -> PathBuf {
+    let mut asset_dir = downloads_base.join(name);
+
+    // Try case-insensitive match if exact name doesn't exist
+    if !asset_dir.exists() && downloads_base.is_dir() {
+        if let Ok(entries) = fs::read_dir(downloads_base) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                        if fname.eq_ignore_ascii_case(name) {
+                            asset_dir = p;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    asset_dir
+}
+
+fn needs_download(asset_dir: &Path, ue_version: &Option<String>) -> bool {
+    if !asset_dir.exists() || !utils::is_download_complete(asset_dir) {
+        return true;
+    }
+
+    if let Some(ue) = ue_version {
+        let ue_trimmed = ue.trim();
+        if !ue_trimmed.is_empty() {
+            let version_dir = asset_dir.join(ue_trimmed);
+            if !version_dir.exists() || !utils::is_download_complete(&version_dir) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+async fn download_template_asset(
+    name: &str,
+    ue_version: &Option<String>,
+    job_id: Option<&str>,
+) -> Result<PathBuf, HttpResponse> {
+    utils::emit_event(
+        job_id,
+        "create:downloading",
+        format!("Downloading '{}'", name),
+        Some(0.0),
+        None,
+    );
+
+    match utils::ensure_asset_downloaded_by_name(name, job_id, "create:downloading").await {
+        Ok(p) => {
+            utils::emit_event(
+                job_id,
+                "create:downloading",
+                format!("Downloaded '{}'", name),
+                Some(100.0),
+                None,
+            );
+            Ok(p)
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            utils::emit_event(
+                job_id,
+                "create:error",
+                format!("Failed to download '{}'", name),
+                None,
+                None,
+            );
+            Err(HttpResponse::NotFound().body(format!("{}", err)))
+        }
+    }
+}
+
+fn determine_search_dir(asset_dir: &Path, ue_version: &Option<String>) -> PathBuf {
+    if let Some(ue) = ue_version {
+        let ue_trimmed = ue.trim();
+        if !ue_trimmed.is_empty() {
+            let version_dir = asset_dir.join(ue_trimmed);
+            if version_dir.exists() {
+                return version_dir;
+            }
+        }
+    }
+    asset_dir.to_path_buf()
+}
+
+fn trim_quotes_and_expand_home(s: &str) -> String {
+    let mut t = s.trim().to_string();
+
+    // Remove surrounding quotes
+    if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        t = t[1..t.len() - 1].to_string();
+    }
+
+    // Expand home directory
+    if let Ok(home) = std::env::var("HOME") {
+        if t.starts_with("~/") {
+            t = t.replacen("~", &home, 1);
+        }
+        if t.contains("$HOME") {
+            t = t.replace("$HOME", &home);
+        }
+    }
+    t
+}
+
+fn find_uproject_bfs(start: &Path, max_depth: usize) -> Option<PathBuf> {
+    use std::collections::VecDeque;
+
+    if max_depth == 0 {
+        return None;
+    }
+
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((start.to_path_buf(), 0));
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        // If it's a file, check if it's a .uproject
+        if dir.is_file() {
+            if dir.extension().and_then(|s| s.to_str()) == Some("uproject") {
+                return Some(dir);
+            }
+            continue;
+        }
+
+        if !dir.is_dir() {
+            continue;
+        }
+
+        // Check current directory for .uproject files
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("uproject") {
+                    return Some(p);
+                }
+            }
+        }
+
+        if depth >= max_depth {
+            continue;
+        }
+
+        // Enqueue subdirectories (excluding common non-project dirs)
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                        let lname = name.to_ascii_lowercase();
+                        if lname == "content" || lname == ".git" || lname == ".svn" {
+                            continue;
+                        }
+                    }
+                    queue.push_back((p, depth + 1));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn setup_output_directory(req: &models::CreateUnrealProjectRequest) -> Result<(PathBuf, PathBuf), HttpResponse> {
+    let out_dir = PathBuf::from(trim_quotes_and_expand_home(&req.output_dir));
+
+    if !out_dir.exists() {
+        if let Err(e) = fs::create_dir_all(&out_dir) {
+            return Err(HttpResponse::InternalServerError().body(
+                format!("Failed to create output_dir: {}", e)
+            ));
+        }
+    }
+
+    let out_dir = std::fs::canonicalize(&out_dir).unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&out_dir))
+            .unwrap_or(out_dir)
+    });
+
+    let new_project_dir = out_dir.join(&req.project_name);
+    if let Err(e) = fs::create_dir_all(&new_project_dir) {
+        return Err(HttpResponse::InternalServerError().body(
+            format!("Failed to create new project directory: {}", e)
+        ));
+    }
+
+    Ok((out_dir, new_project_dir))
+}
+
+fn handle_dry_run(
+    req: &models::CreateUnrealProjectRequest,
+    template_dir: &Path,
+    new_project_dir: &Path,
+    editor_path: &Path,
+    target_uproject: &Path,
+) -> HttpResponse {
+    let exclude_names = ["Binaries", "DerivedDataCache", "Intermediate", "Saved", ".git", ".svn", ".vs"];
+    let project_type = req.project_type.as_deref().unwrap_or("bp");
+
+    let mut actions = vec![
+        format!(
+            "Copy '{}' -> '{}' (excluding {:?})",
+            template_dir.to_string_lossy(),
+            new_project_dir.to_string_lossy(),
+            exclude_names
+        ),
+        format!(
+            "Open with: {} {}{}",
+            editor_path.to_string_lossy(),
+            target_uproject.to_string_lossy(),
+            if project_type == "bp" { " -NoCompile" } else { "" }
+        ),
+    ];
+
+    let resp = models::CreateUnrealProjectResponse {
+        ok: true,
+        message: format!(
+            "Dry run: would copy project files, then open project{}",
+            if req.open_after_create.unwrap_or(false) {
+                " (open_after_create=true)"
+            } else {
+                ""
+            }
+        ),
+        command: actions.join(" | "),
+        project_path: Some(new_project_dir.to_string_lossy().to_string()),
+    };
+
+    HttpResponse::Ok().json(resp)
+}
+
+fn copy_project_files(
+    template_dir: &Path,
+    new_project_dir: &Path,
+    project_name: &str,
+    template_path: &Path,
+    job_id: &Option<String>,
+) -> Result<(usize, usize), HttpResponse> {
+    let exclude_names = ["Binaries", "DerivedDataCache", "Intermediate", "Saved", ".git", ".svn", ".vs"];
+
+    // Count total files to copy
+    let total_files = count_files_to_copy(template_dir, &exclude_names);
+
+    println!(
+        "[copy-start] {} -> {} ({} files, excluding {:?})",
+        template_dir.to_string_lossy(),
+        new_project_dir.to_string_lossy(),
+        total_files,
+        exclude_names
+    );
+
+    utils::emit_event(
+        job_id.as_deref(),
+        "create:copying",
+        format!("Creating new project at {}", new_project_dir.to_string_lossy()),
+        Some(0.0),
+        None,
+    );
+
+    let (copied, skipped) = perform_copy(
+        template_dir,
+        new_project_dir,
+        project_name,
+        template_path,
+        &exclude_names,
+        total_files,
+        job_id,
+    )?;
+
+    println!(
+        "[copy-finish] Copied {} files ({} skipped) to {}",
+        copied,
+        skipped,
+        new_project_dir.to_string_lossy()
+    );
+
+    Ok((copied, skipped))
+}
+
+fn count_files_to_copy(template_dir: &Path, exclude_names: &[&str]) -> usize {
+    let mut count = 0;
+    for entry in walkdir::WalkDir::new(template_dir).into_iter().filter_map(|e| e.ok()) {
+        let src_path = entry.path();
+        let Ok(rel) = src_path.strip_prefix(template_dir) else { continue };
+
+        if rel.as_os_str().is_empty() || should_exclude(rel, exclude_names) {
+            continue;
+        }
+
+        if entry.file_type().is_file() {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn should_exclude(rel_path: &Path, exclude_names: &[&str]) -> bool {
+    use std::path::Component;
+
+    if let Some(Component::Normal(os)) = rel_path.components().next() {
+        let name = os.to_string_lossy().to_string();
+        return exclude_names.iter().any(|ex| name.eq_ignore_ascii_case(ex));
+    }
+    false
+}
+
+fn perform_copy(
+    template_dir: &Path,
+    new_project_dir: &Path,
+    project_name: &str,
+    template_path: &Path,
+    exclude_names: &[&str],
+    total_files: usize,
+    job_id: &Option<String>,
+) -> Result<(usize, usize), HttpResponse> {
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    let mut last_logged_percent = 0u32;
+    let mut last_log_instant = Instant::now();
+
+    for entry in walkdir::WalkDir::new(template_dir).into_iter().filter_map(|e| e.ok()) {
+        let src_path = entry.path();
+        let Ok(rel) = src_path.strip_prefix(template_dir) else { continue };
+
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+
+        if should_exclude(rel, exclude_names) {
+            skipped += 1;
+            continue;
+        }
+
+        let dst_path = new_project_dir.join(rel);
+
+        if entry.file_type().is_dir() {
+            if let Err(e) = fs::create_dir_all(&dst_path) {
+                return Err(HttpResponse::InternalServerError().body(
+                    format!("Failed to create dir {}: {}", dst_path.to_string_lossy(), e)
+                ));
+            }
+        } else if entry.file_type().is_file() {
+            let final_dst = if src_path.extension().and_then(|s| s.to_str()) == Some("uproject") {
+                new_project_dir.join(format!("{}.uproject", project_name))
+            } else {
+                dst_path
+            };
+
+            if let Some(parent) = final_dst.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    return Err(HttpResponse::InternalServerError().body(
+                        format!("Failed to create parent dir {}: {}", parent.to_string_lossy(), e)
+                    ));
+                }
+            }
+
+            if let Err(e) = fs::copy(src_path, &final_dst) {
+                return Err(HttpResponse::InternalServerError().body(
+                    format!("Failed to copy {} -> {}: {}", src_path.to_string_lossy(), final_dst.to_string_lossy(), e)
+                ));
+            }
+
+            copied += 1;
+
+            // Log progress
+            if total_files > 0 {
+                let percent = ((copied as f64 / total_files as f64) * 100.0).floor() as u32;
+                if percent >= last_logged_percent + 5 || last_log_instant.elapsed().as_secs() >= 2 {
+                    println!("[copy-progress] {}/{} ({}%) - {}", copied, total_files, percent, rel.to_string_lossy());
+                    last_logged_percent = percent;
+                    last_log_instant = Instant::now();
+                    utils::emit_event(
+                        job_id.as_deref(),
+                        "create:copying",
+                        format!("{} / {}", copied, total_files),
+                        Some(percent as f32),
+                        None,
+                    );
+                }
+            }
+        } else if entry.file_type().is_symlink() {
+            skipped += 1;
+        }
+    }
+
+    Ok((copied, skipped))
+}
+
+fn finalize_uproject(
+    new_project_dir: &Path,
+    req: &models::CreateUnrealProjectRequest,
+    template_path: &Path,
+) -> PathBuf {
+    let new_uproject = new_project_dir.join(format!("{}.uproject", req.project_name));
+
+    // Fallback if rename didn't occur
+    let target_uproject = if new_uproject.exists() {
+        new_uproject.clone()
+    } else {
+        let fallback = new_project_dir.join(template_path.file_name().unwrap_or_default());
+        if !fallback.exists() {
+            let _ = fs::copy(template_path, &fallback);
+        }
+        fallback
+    };
+
+    // Update project metadata
+    update_project_metadata(&target_uproject, req);
+
+    target_uproject
+}
+
+fn update_project_metadata(uproject_path: &Path, req: &models::CreateUnrealProjectRequest) {
+    let Ok(json_text) = fs::read_to_string(uproject_path) else { return };
+
+    // Update display/friendly name
+    if json_text.contains("\"FileVersion\"") || json_text.contains("\"EngineAssociation\"") {
+        let updated = json_text
+            .replace("\"DisplayName\":\"", &format!("\"DisplayName\":\"{}",req.project_name))
+            .replace("\"FriendlyName\":\"", &format!("\"FriendlyName\":\"{}",  req.project_name));
+
+        if updated != json_text {
+            let _ = fs::write(uproject_path, &updated);
+        }
+    }
+
+    // Set EngineAssociation if UE version specified
+    if let Some(ue) = &req.ue {
+        set_engine_association(uproject_path, ue);
+    }
+}
+
+fn set_engine_association(uproject_path: &Path, ue_version: &str) {
+    let mut ue = ue_version.trim().to_string();
+    if ue.starts_with("UE_") {
+        ue = ue[3..].to_string();
+    }
+
+    let parts: Vec<&str> = ue.split('.').collect();
+    if parts.len() < 2 {
+        return;
+    }
+
+    let major_minor = format!("{}.{}", parts[0].trim(), parts[1].trim());
+
+    let Ok(text) = fs::read_to_string(uproject_path) else { return };
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("EngineAssociation".to_string(), serde_json::Value::String(major_minor));
+        if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+            let _ = fs::write(uproject_path, pretty);
+        }
+    }
+}
+
+fn build_editor_command(
+    editor_path: &Path,
+    uproject_path: &Path,
+    project_type: &Option<String>,
+) -> String {
+    let ptype = project_type.as_deref().unwrap_or("bp");
+    format!(
+        "{} {}{}",
+        editor_path.to_string_lossy(),
+        uproject_path.to_string_lossy(),
+        if ptype == "bp" { " -NoCompile" } else { "" }
+    )
+}
+
+fn execute_project_open(
+    req: &models::CreateUnrealProjectRequest,
+    copied: usize,
+    skipped: usize,
+    command: String,
+    project_dir: &Path,
+) -> HttpResponse {
+    let project_type = req.project_type.as_deref().unwrap_or("bp");
+    let open_after = req.open_after_create.unwrap_or(false);
+
+    if !open_after {
         let resp = models::CreateUnrealProjectResponse {
             ok: true,
-            message: format!("Project created ({} files, {} skipped). Not opening (open_after_create=false).", copied_files, skipped_files),
-            command: command_preview,
-            project_path: Some(new_project_dir.to_string_lossy().to_string()),
+            message: format!(
+                "Project created ({} files, {} skipped). Not opening (open_after_create=false).",
+                copied, skipped
+            ),
+            command,
+            project_path: Some(project_dir.to_string_lossy().to_string()),
         };
         return HttpResponse::Ok().json(resp);
     }
+
+    // Parse command and spawn process
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return HttpResponse::InternalServerError().body("Invalid command");
+    }
+
+    let mut cmd = std::process::Command::new(parts[0]);
+    for arg in &parts[1..] {
+        cmd.arg(arg);
+    }
+
+    match cmd.spawn() {
+        Ok(_) => {
+            let resp = models::CreateUnrealProjectResponse {
+                ok: true,
+                message: format!(
+                    "Project created ({} files, {} skipped). Unreal Editor is launching...",
+                    copied, skipped
+                ),
+                command,
+                project_path: Some(project_dir.to_string_lossy().to_string()),
+            };
+            HttpResponse::Ok().json(resp)
+        }
+        Err(e) => {
+            let resp = models::CreateUnrealProjectResponse {
+                ok: true,
+                message: format!(
+                    "Project created ({} files, {} skipped). Failed to launch UnrealEditor: {}",
+                    copied, skipped, e
+                ),
+                command,
+                project_path: Some(project_dir.to_string_lossy().to_string()),
+            };
+            HttpResponse::Ok().json(resp)
+        }
+    }
 }
+
 
 
 /// Launches Unreal Editor for a given engine version (no project).
