@@ -1,5 +1,70 @@
 use serde::{Deserialize, Serialize};
 
+// Phase enum for event types
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum Phase {
+    #[serde(rename = "import:start")]
+    ImportStart,
+    #[serde(rename = "import:copying")]
+    ImportCopying,
+    #[serde(rename = "import:complete")]
+    ImportComplete,
+    #[serde(rename = "import:error")]
+    ImportError,
+    #[serde(rename = "create:start")]
+    CreateStart,
+    #[serde(rename = "create:downloading")]
+    CreateDownloading,
+    #[serde(rename = "create:copying")]
+    CreateCopying,
+    #[serde(rename = "create:complete")]
+    CreateComplete,
+    #[serde(rename = "create:error")]
+    CreateError,
+    #[serde(rename = "download:start")]
+    DownloadStart,
+    #[serde(rename = "download:progress")]
+    DownloadProgress,
+    #[serde(rename = "download:complete")]
+    DownloadComplete,
+    #[serde(rename = "download:error")]
+    DownloadError,
+    #[serde(rename = "cancelled")]
+    Cancelled,
+    #[serde(rename = "cancel")]
+    Cancel,
+}
+
+impl Phase {
+    /// Returns the string representation for the phase
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Phase::ImportStart => "import:start",
+            Phase::ImportCopying => "import:copying",
+            Phase::ImportComplete => "import:complete",
+            Phase::ImportError => "import:error",
+            Phase::CreateStart => "create:start",
+            Phase::CreateDownloading => "create:downloading",
+            Phase::CreateCopying => "create:copying",
+            Phase::CreateComplete => "create:complete",
+            Phase::CreateError => "create:error",
+            Phase::DownloadStart => "download:start",
+            Phase::DownloadProgress => "download:progress",
+            Phase::DownloadComplete => "download:complete",
+            Phase::DownloadError => "download:error",
+            Phase::Cancelled => "cancelled",
+            Phase::Cancel => "cancel",
+        }
+    }
+}
+
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+
 #[derive(Serialize)]
 pub struct OpenProjectResponse {
     pub launched: bool,
@@ -170,4 +235,9 @@ pub struct SetProjectEngineRequest {
 pub struct SimpleResponse {
     pub ok: bool,
     pub message: String,
+}
+
+#[derive(Deserialize)]
+pub struct AuthCompleteRequest {
+    pub code: String
 }
