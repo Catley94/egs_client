@@ -229,10 +229,11 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
     let bytes_done = Arc::new(AtomicU64::new(0));
 
     // Check if job has been requested to cancel
-    if is_cancelled(job_id_opt) {
-        emit_event(job_id_opt, models::Phase::Cancelled, "Cancelled", None, None);
+    if check_if_job_is_cancelled(job_id_opt) {
+        cancel_this_job(job_id_opt);
         return Err(anyhow::anyhow!("cancelled"));
     }
+
 
     // Setup file-level concurrency
     let file_sema = Arc::new(Semaphore::new(max_files));
@@ -248,11 +249,13 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
     for (file_index, (filename, file)) in files.into_iter().enumerate() {
         // Check if job has been requested to cancel
-        if is_cancelled(job_id_opt) {
-            emit_event(job_id_opt, models::Phase::Cancelled, "Cancelled", None, None);
+        if check_if_job_is_cancelled(job_id_opt) {
+            cancel_this_job(job_id_opt);
             return Err(anyhow::anyhow!("cancelled"));
         }
+
         let permit_owner = file_sema.clone().acquire_owned().await.expect("semaphore closed");
+
         let client = client.clone();
         let temp_dir = temp_dir.clone();
         let out_directory = download_directory_full_path.to_path_buf();
@@ -262,6 +265,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
         let job_id_owned = job_id_owned.clone();
         let bytes_done = bytes_done.clone();
         let _total_bytes_all = total_bytes_all;
+
         join.spawn(async move {
             let _permit = permit_owner; // hold until task end
             let file_no = file_index + 1;
@@ -348,7 +352,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
                 // Check if job has been requested to be cancelled
-                if utils::is_cancelled(job_id_owned.as_deref()) {
+                if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
                     utils::emit_event(job_id_owned.as_deref(), models::Phase::Cancelled, "Cancelled", None, None);
                     break;
                 }
@@ -363,7 +367,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                 chunk_join.spawn(async move {
                     let _p = chunk_permit_owner; // hold permit until end
                     // Cancelled? bail
-                    if utils::is_cancelled(job_id_inner.as_deref()) {
+                    if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
                         return Err(anyhow::anyhow!("cancelled"));
                     }
                     let chunk_path = temp_dir.join(format!("{}.chunk", guid));
@@ -380,7 +384,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     let url = link.to_string();
 
                     // Check cancel right before sending
-                    if utils::is_cancelled(job_id_inner.as_deref()) {
+                    if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
                         return Err(anyhow::anyhow!("cancelled"));
                     }
                     let mut resp = client.get(url.clone()).send().await;
@@ -392,7 +396,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     let resp = resp.error_for_status().map_err(|e| anyhow::anyhow!("chunk HTTP {} for {}", e.status().unwrap_or_default(), guid))?;
 
                     // Check cancel before reading body
-                    if utils::is_cancelled(job_id_inner.as_deref()) {
+                    if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
                         return Err(anyhow::anyhow!("cancelled"));
                     }
 
@@ -407,7 +411,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     let mut stream = resp.bytes_stream();
                     let mut last_emit = Instant::now();
                     while let Some(next) = stream.next().await {
-                        if utils::is_cancelled(job_id_inner.as_deref()) {
+                        if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
                             // Leave partial chunk; future runs may reuse/overwrite
                             return Err(anyhow::anyhow!("cancelled"));
                         }
@@ -444,14 +448,14 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             while let Some(res) = chunk_join.join_next().await {
                 if let Err(e) = res { return Err(e.into()); }
                 // If a task returned Err(cancelled), propagate
-                if utils::is_cancelled(job_id_owned.as_deref()) {
+                if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
                     return Err(anyhow::anyhow!("cancelled"));
                 }
             }
             println!("\r  chunks: {}/{} (100%) - done                    ", total_chunks, total_chunks);
 
             // Cancel before assembling
-            if utils::is_cancelled(job_id_owned.as_deref()) {
+            if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
                 return Err(anyhow::anyhow!("cancelled"));
             }
 
@@ -461,7 +465,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             let total_bytes: u128 = file.file_chunk_parts.iter().map(|p| p.size as u128).sum();
             let mut written: u64 = 0;
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
-                if utils::is_cancelled(job_id_owned.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
+                if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
                 let guid = &part.guid;
                 let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                 let chunk_bytes = std::fs::read(&chunk_path)?;
@@ -521,7 +525,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
     // Await all file tasks
     while let Some(res) = join.join_next().await {
         if let Err(e) = res { return Err(e.into()); }
-        if is_cancelled(job_id_opt) {
+        if check_if_job_is_cancelled(job_id_opt) {
             return Err(anyhow::anyhow!("cancelled"));
         }
     }
@@ -563,6 +567,11 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
     Ok(())
 }
 
+fn cancel_this_job(job_id_opt: Option<&str>) {
+    emit_event(job_id_opt, models::Phase::Cancelled, "Job Cancelled", None, None);
+    if let Some(ref j) = job_id_opt { acknowledge_cancel(j); }
+}
+
 /// Sanitize a title for use as a folder name (mirrors logic in download_asset and refresh).
 pub fn sanitize_title_for_folder(s: &str) -> String {
     let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
@@ -576,7 +585,7 @@ pub fn sanitize_title_for_folder(s: &str) -> String {
 /// based on the presence of corresponding folders under downloads/.
 /// Returns (total_assets, marked_downloaded, changed).
 pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize, bool) {
-    let downloads_root = default_downloads_dir();
+    let downloads_root = get_default_downloads_dir_path();
     let mut total_assets = 0usize;
     let mut marked_downloaded = 0usize;
     let mut changed = false;
@@ -687,7 +696,7 @@ pub fn default_cache_dir() -> PathBuf {
     base.join("egs_client")
 }
 
-pub fn default_downloads_dir() -> PathBuf {
+pub fn get_default_downloads_dir_path() -> PathBuf {
     // Debug: project-local directory for easy inspection during development
     if cfg!(debug_assertions) {
         return PathBuf::from(DEFAULT_DOWNLOADS_DIR_NAME);
@@ -708,7 +717,7 @@ pub fn is_download_complete(root: &Path) -> bool {
     root.join(".download_complete").is_file()
 }
 
-pub fn fab_cache_file() -> PathBuf {
+pub fn get_fab_cache_file_path() -> PathBuf {
     let dir = default_cache_dir();
     let _ = std::fs::create_dir_all(&dir);
     dir.join("fab_list.json")
@@ -923,7 +932,7 @@ pub fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool,
     let mut last_percent: u32 = 0;
     emit_event(job_id_opt, phase, "Starting...", Some(0.0), None);
     for entry in WalkDir::new(src).follow_links(false) {
-        if is_cancelled(job_id_opt) {
+        if check_if_job_is_cancelled(job_id_opt) {
             emit_event(job_id_opt, phase, "Cancelled", None, None);
             return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled by user"));
         }
@@ -1057,8 +1066,8 @@ static JOB_BUFFER: OnceLock<DashMap<String, VecDeque<String>>> = OnceLock::new()
 static CANCEL_MAP: OnceLock<DashMap<String, bool>> = OnceLock::new();
 fn cancel_map() -> &'static DashMap<String, bool> { CANCEL_MAP.get_or_init(|| DashMap::new()) }
 pub fn cancel_job(job_id: &str) { cancel_map().insert(job_id.to_string(), true); emit_event(Some(job_id), models::Phase::Cancel, "Cancellation requested", None, None); }
-pub fn clear_cancel(job_id: &str) { let _ = cancel_map().remove(job_id); }
-pub fn is_cancelled(job_id_opt: Option<&str>) -> bool { if let Some(j) = job_id_opt { cancel_map().get(j).is_some() } else { false } }
+pub fn acknowledge_cancel(job_id: &str) { let _ = cancel_map().remove(job_id); }
+pub fn check_if_job_is_cancelled(job_id_opt: Option<&str>) -> bool { if let Some(j) = job_id_opt { cancel_map().get(j).is_some() } else { false } }
 
 pub fn bus() -> &'static DashMap<String, broadcast::Sender<String>> {
     JOB_BUS.get_or_init(|| DashMap::new())
@@ -1304,7 +1313,7 @@ pub async fn handle_refresh_fab_list() -> HttpResponse {
 
                     // Save enriched JSON to cache for faster subsequent loads and offline-friendly UI.
                     if let Ok(json_bytes) = serde_json::to_vec_pretty(&value) {
-                        let cache_path = utils::fab_cache_file();
+                        let cache_path = utils::get_fab_cache_file_path();
                         if let Some(parent) = cache_path.parent() { let _ = fs::create_dir_all(parent); }
                         if let Err(e) = fs::write(&cache_path, &json_bytes) {
                             eprintln!("Warning: failed to write FAB cache: {}", e);
@@ -1481,9 +1490,9 @@ pub async fn handle_fab_download(
             if !err_response.status().is_success() {
                 return Some(err_response);
             }
-            if utils::is_cancelled(job_id.as_deref()) {
+            if utils::check_if_job_is_cancelled(job_id.as_deref()) {
                 if let Some(ref j) = job_id {
-                    utils::clear_cancel(j);
+                    utils::acknowledge_cancel(j);
                 }
                 return Some(HttpResponse::Ok().body("cancelled"));
             }
@@ -2246,24 +2255,25 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
     let ue_major_minor_version = query.get("ue").cloned();
 
     // If already cancelled before we start, exit early
-    if utils::is_cancelled(job_id.as_deref()) {
-        utils::emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
-        if let Some(ref j) = job_id { utils::clear_cancel(j); }
+    if check_if_job_is_cancelled(job_id.as_deref()) {
+        emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
+        if let Some(ref job) = job_id { acknowledge_cancel(job); }
         return Err(HttpResponse::Ok().body("cancelled"));
     }
 
 
-    let mut epic_services = utils::create_epic_games_services();
-    if !utils::try_cached_login(&mut epic_services).await {
-        utils::epic_authenticate(&mut epic_services).await;
+    // Authenticate with Epic services
+    let mut epic_services = create_epic_games_services();
+    if !try_cached_login(&mut epic_services).await {
+        epic_authenticate(&mut epic_services).await;
     }
 
     // Emit start event with a user-friendly asset title if available.
     let asset_name = utils::get_friendly_asset_name(&namespace, &asset_id, &artifact_id, &mut epic_services).await;
-    utils::emit_event(
+    emit_event(
         job_id.as_deref(),
         models::Phase::DownloadStart,
-        format!("Starting download {}", asset_name),
+        format!("Starting to download asset: {}", asset_name),
         Some(0.0),
         None);
 
@@ -2272,96 +2282,87 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
     let manifests = match manifest_res {
         Ok(m) => m,
         Err(e) => {
-            utils::emit_event(job_id.as_deref(), models::Phase::DownloadError, format!("Failed to fetch manifest: {:?}", e), None, None);
+            emit_event(job_id.as_deref(), models::Phase::DownloadError, format!("Failed to fetch manifest: {:?}", e), None, None);
             return Err(HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e)));
         }
     };
 
-    for man in manifests.iter() {
+    for manifest in manifests.iter() {
         // Get a download URL
-        for url in man.distribution_point_base_urls.iter() {
+        for url in manifest.distribution_point_base_urls.iter() {
             // Check if job has been requested to cancel
-            if utils::is_cancelled(job_id.as_deref()) {
+            if check_if_job_is_cancelled(job_id.as_deref()) {
                 // If requested to cancel, cancel job
-                utils::emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
-                if let Some(ref j) = job_id { utils::clear_cancel(j); }
+                emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
+                if let Some(ref j) = job_id { acknowledge_cancel(j); }
                 return Err(HttpResponse::Ok().body("cancelled"));
             }
 
-            if let Ok(mut dm) = epic_services.fab_download_manifest(man.clone(), url).await {
+            if let Ok(mut download_manifest) = epic_services.fab_download_manifest(manifest.clone(), url).await {
                 // Ensure SourceURL present for downloader (some tooling relies on it)
                 use std::collections::HashMap;
-                if let Some(ref mut fields) = dm.custom_fields {
+                if let Some(ref mut fields) = download_manifest.custom_fields {
                     fields.insert("SourceURL".to_string(), url.clone());
                 } else {
                     let mut map = HashMap::new();
                     map.insert("SourceURL".to_string(), url.clone());
-                    dm.custom_fields = Some(map);
+                    download_manifest.custom_fields = Some(map);
                 }
 
-                let title_folder = utils::get_friendly_folder_name(asset_name.clone());
+                let friendly_folder_name = get_friendly_folder_name(asset_name.clone());
+                let folder_name = friendly_folder_name.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
 
-
-                // // Try to use the library list to find the matching asset by IDs
-                // if let Some(details) = utils::get_account_details(&mut epic_services).await {
-                //     if let Some(lib) = utils::get_fab_library_items(&mut epic_services, details).await {
-                //         if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
-                //             // Verify the artifact belongs to this asset's versions
-                //             if asset.project_versions.iter().any(|v| v.artifact_id == artifact_id) {
-                //                 let mut t = asset.title.clone();
-                //                 // Replace characters illegal on common filesystems.
-                //                 let illegal: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-                //                 t = t.replace(&illegal[..], "_");
-                //                 // Also trim leading/trailing spaces and dots (Windows quirk).
-                //                 let t = t.trim().trim_matches('.').to_string();
-                //                 if !t.is_empty() {
-                //                     title_folder = Some(t);
-                //                 }
-                //             }
-                //         }
-                //     }
-                // }
-
-                let folder_name = title_folder.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
-                let mut download_directory_full_path = utils::default_downloads_dir().join(folder_name);
+                let mut download_directory_full_path = get_default_downloads_dir_path().join(folder_name);
                 if let Some(ref major_minor_version) = ue_major_minor_version {
-                    if !major_minor_version.trim().is_empty() {
+                    if major_minor_version.trim().is_empty() == false {
                         // Create folder called specific version of asset
                         download_directory_full_path = download_directory_full_path.join(major_minor_version.trim());
                     }
                 }
 
                 // Progress callback: forward file completion percentage over WS
-                let progress_callback: Option<utils::ProgressFn> = job_id.as_deref().map(|jid| {
+                let progress_callback: Option<ProgressFn> = job_id.as_deref().map(|jid| {
                     let jid = jid.to_string();
-                    let f: utils::ProgressFn = std::sync::Arc::new(move |percentage_complete: u32, msg: String| {
-                        utils::emit_event(Some(&jid), models::Phase::DownloadProgress, format!("{}", msg), Some(percentage_complete as f32), None);
+                    let f: ProgressFn = std::sync::Arc::new(move |percentage_complete: u32, msg: String| {
+                        emit_event(Some(&jid), models::Phase::DownloadProgress, format!("{}", msg), Some(percentage_complete as f32), None);
                     });
                     f
                 });
 
-                match utils::download_asset(&dm, url.as_str(), &download_directory_full_path, progress_callback, job_id.as_deref()).await {
+                match download_asset(&download_manifest, url.as_str(), &download_directory_full_path, progress_callback, job_id.as_deref()).await {
                     Ok(_) => {
                         println!("Download complete");
 
-                        // After a successful download, update the cached FAB list (if present)
-                        // to mark this asset and specific version as downloaded, so the UI can
-                        // reflect the state without requiring a full refresh.
-                        let cache_path = utils::fab_cache_file();
-                        utils::update_fab_cache_json(namespace, asset_id, artifact_id, ue_major_minor_version, title_folder, &cache_path);
-
-                        utils::emit_event(job_id.as_deref(), models::Phase::DownloadComplete, "Download complete", Some(100.0), None);
-                        if let Some(ref j) = job_id { utils::clear_cancel(j); }
-                        return Err(HttpResponse::Ok().body("Download complete"))
-                    },
-                    Err(e) => {
-                        if utils::is_cancelled(job_id.as_deref()) {
+                        if utils::check_if_job_is_cancelled(job_id.as_deref()) {
                             // Remove the incomplete asset folder so partial files are not left behind
                             if let Err(err) = fs::remove_dir_all(&download_directory_full_path) {
                                 eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", download_directory_full_path.display(), err);
                             }
                             utils::emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
-                            if let Some(ref j) = job_id { utils::clear_cancel(j); }
+                            if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
+                            return Err(HttpResponse::Ok().body("cancelled"));
+                        }
+
+                        // After a successful download, update the cached FAB list (if present)
+                        // to mark this asset and specific version as downloaded, so the UI can
+                        // reflect the state without requiring a full refresh.
+                        let fab_cache_file_path = get_fab_cache_file_path();
+                        update_fab_cache_json(namespace, asset_id, artifact_id, ue_major_minor_version, friendly_folder_name, &fab_cache_file_path);
+
+                        emit_event(job_id.as_deref(), models::Phase::DownloadComplete, "Download complete", Some(100.0), None);
+                        // TODO: Should we really acknowledge cancel if the download has completed?
+                        if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
+                        // TODO: The below was retuning an Err instead of Ok, should it be an Err?
+                        return Ok(HttpResponse::Ok().body("Download complete"))
+                    },
+                    Err(e) => {
+                        if utils::check_if_job_is_cancelled(job_id.as_deref()) {
+                            // Remove the incomplete asset folder so partial files are not left behind
+                            if let Err(err) = fs::remove_dir_all(&download_directory_full_path) {
+                                eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", download_directory_full_path.display(), err);
+                            }
+                            utils::emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
+                            if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
                             return Err(HttpResponse::Ok().body("cancelled"));
                         }
                         eprintln!("Download failed from {}: {:?}", url, e);

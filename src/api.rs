@@ -100,7 +100,7 @@ pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
 /// - 200 OK on success (JSON body)
 #[get("/get-fab-list")]
 pub async fn get_fab_list() -> HttpResponse {
-    let path = utils::fab_cache_file();
+    let path = utils::get_fab_cache_file_path();
     if path.exists() {
         if let Ok(mut f) = fs::File::open(&path) {
             let mut buf = Vec::new();
@@ -651,8 +651,8 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
                     return resp;
                 }
                 // If the job was cancelled, don't proceed to import
-                if utils::is_cancelled(job_id.as_deref()) {
-                    if let Some(ref j) = job_id { utils::clear_cancel(j); }
+                if utils::check_if_job_is_cancelled(job_id.as_deref()) {
+                    if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
                     return HttpResponse::Ok().body("cancelled");
                 }
                 // Otherwise continue to import using the folder naming used by the downloader
@@ -1174,7 +1174,7 @@ pub async fn get_paths_config() -> HttpResponse {
         effective_projects_dir: utils::default_unreal_projects_dir().to_string_lossy().to_string(),
         effective_engines_dir: utils::default_unreal_engines_dir().to_string_lossy().to_string(),
         effective_cache_dir: utils::default_cache_dir().to_string_lossy().to_string(),
-        effective_downloads_dir: utils::default_downloads_dir().to_string_lossy().to_string(),
+        effective_downloads_dir: utils::get_default_downloads_dir_path().to_string_lossy().to_string(),
     };
     HttpResponse::Ok().json(status)
 }
@@ -1204,7 +1204,7 @@ pub async fn set_paths_config(body: web::Json<models::PathsUpdate>) -> HttpRespo
         effective_projects_dir: utils::default_unreal_projects_dir().to_string_lossy().to_string(),
         effective_engines_dir: utils::default_unreal_engines_dir().to_string_lossy().to_string(),
         effective_cache_dir: utils::default_cache_dir().to_string_lossy().to_string(),
-        effective_downloads_dir: utils::default_downloads_dir().to_string_lossy().to_string(),
+        effective_downloads_dir: utils::get_default_downloads_dir_path().to_string_lossy().to_string(),
     };
     HttpResponse::Ok().json(status)
 }
