@@ -276,7 +276,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
             // Prepare final output path under .../data/<filename>
             let mut out_path = out_directory.clone();
-            if out_path.file_name().map_or(false, |n| n == "data") == false { out_path = out_path.join("data"); }
+            if out_path.file_name().map_or(false, |name| name == "data") == false { out_path = out_path.join("data"); }
             let out_path = out_path.join(&filename);
             if let Some(parent) = out_path.parent() { let _ = std::fs::create_dir_all(parent); }
             let tmp_out_path = out_path.with_extension("part");
@@ -285,11 +285,11 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             let mut skip_existing = false;
             if out_path.exists() {
                 if !file.file_hash.is_empty() {
-                    if let Ok(mut f) = std::fs::File::open(&out_path) {
+                    if let Ok(mut _file) = std::fs::File::open(&out_path) {
                         use std::io::Read;
                         let mut hasher = Sha1::new();
-                        let mut buf = [0u8; 1024 * 1024];
-                        loop { match f.read(&mut buf) { Ok(0) => break, Ok(n) => hasher.update(&buf[..n]), Err(_) => break } }
+                        let mut buffer = [0u8; 1024 * 1024];
+                        loop { match _file.read(&mut buffer) { Ok(0) => break, Ok(n) => hasher.update(&buffer[..n]), Err(_) => break } }
                         let got_hex = hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>();
                         if got_hex == file.file_hash { println!("  skipping: existing file is up-to-date"); skip_existing = true; }
                     }
@@ -319,7 +319,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                         "total_bytes": _total_bytes_all,
                     })),
                 );
-                return Ok::<(), anyhow::Error>(());
+                return Ok(());
             }
 
             // Ensure chunks
@@ -353,7 +353,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
                 // Check if job has been requested to be cancelled
                 if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
-                    utils::emit_event(job_id_owned.as_deref(), models::Phase::Cancelled, "Cancelled", None, None);
+                    cancel_this_job(job_id_owned.as_deref());
                     break;
                 }
                 let guid = part.guid.clone();
@@ -368,13 +368,14 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     let _p = chunk_permit_owner; // hold permit until end
                     // Cancelled? bail
                     if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
+                        cancel_this_job(job_id_inner.as_deref());
                         return Err(anyhow::anyhow!("cancelled"));
                     }
                     let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                     if chunk_path.exists() {
                         print!("\r  chunks: {}/{} ({}%) - using cached chunk    ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
                         io::stdout().flush().ok();
-                        return Ok::<(), anyhow::Error>(());
+                        return Ok(());
                     }
 
                     print!("\r  chunks: {}/{} ({}%) - downloading...        ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
@@ -385,6 +386,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
                     // Check cancel right before sending
                     if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
+                        cancel_this_job(job_id_inner.as_deref());
                         return Err(anyhow::anyhow!("cancelled"));
                     }
                     let mut resp = client.get(url.clone()).send().await;
@@ -397,6 +399,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
                     // Check cancel before reading body
                     if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
+                        cancel_this_job(job_id_inner.as_deref());
                         return Err(anyhow::anyhow!("cancelled"));
                     }
 
@@ -413,6 +416,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     while let Some(next) = stream.next().await {
                         if utils::check_if_job_is_cancelled(job_id_inner.as_deref()) {
                             // Leave partial chunk; future runs may reuse/overwrite
+                            cancel_this_job(job_id_inner.as_deref());
                             return Err(anyhow::anyhow!("cancelled"));
                         }
 
@@ -449,6 +453,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                 if let Err(e) = res { return Err(e.into()); }
                 // If a task returned Err(cancelled), propagate
                 if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
+                    cancel_this_job(job_id_owned.as_deref());
                     return Err(anyhow::anyhow!("cancelled"));
                 }
             }
@@ -456,6 +461,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 
             // Cancel before assembling
             if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
+                cancel_this_job(job_id_owned.as_deref());
                 return Err(anyhow::anyhow!("cancelled"));
             }
 
@@ -465,7 +471,10 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             let total_bytes: u128 = file.file_chunk_parts.iter().map(|p| p.size as u128).sum();
             let mut written: u64 = 0;
             for (chunk_idx, part) in file.file_chunk_parts.iter().enumerate() {
-                if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) { return Err(anyhow::anyhow!("cancelled")); }
+                if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
+                    cancel_this_job(job_id_owned.as_deref());
+                    return Err(anyhow::anyhow!("cancelled"));
+                }
                 let guid = &part.guid;
                 let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                 let chunk_bytes = std::fs::read(&chunk_path)?;
@@ -526,6 +535,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
     while let Some(res) = join.join_next().await {
         if let Err(e) = res { return Err(e.into()); }
         if check_if_job_is_cancelled(job_id_opt) {
+            cancel_this_job(job_id_opt.as_deref());
             return Err(anyhow::anyhow!("cancelled"));
         }
     }
@@ -568,6 +578,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
 }
 
 fn cancel_this_job(job_id_opt: Option<&str>) {
+    println!("Cancelling job...");
     emit_event(job_id_opt, models::Phase::Cancelled, "Job Cancelled", None, None);
     if let Some(ref j) = job_id_opt { acknowledge_cancel(j); }
 }
@@ -594,8 +605,8 @@ pub fn annotate_downloaded_flags(value: &mut serde_json::Value) -> (usize, usize
         for asset in results.iter_mut() {
             total_assets += 1;
             let title: String = asset.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // let namespace: String = asset.get("assetNamespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // let asset_id: String = asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
             let mut asset_downloaded = false;
             let mut used_title_folder = false;
@@ -933,7 +944,7 @@ pub fn copy_dir_recursive_with_progress(src: &Path, dst: &Path, overwrite: bool,
     emit_event(job_id_opt, phase, "Starting...", Some(0.0), None);
     for entry in WalkDir::new(src).follow_links(false) {
         if check_if_job_is_cancelled(job_id_opt) {
-            emit_event(job_id_opt, phase, "Cancelled", None, None);
+            cancel_this_job(job_id_opt.as_deref());
             return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled by user"));
         }
         let entry = entry.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -1491,9 +1502,7 @@ pub async fn handle_fab_download(
                 return Some(err_response);
             }
             if utils::check_if_job_is_cancelled(job_id.as_deref()) {
-                if let Some(ref j) = job_id {
-                    utils::acknowledge_cancel(j);
-                }
+                cancel_this_job(job_id.as_deref());
                 return Some(HttpResponse::Ok().body("cancelled"));
             }
         }
@@ -2256,8 +2265,7 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
 
     // If already cancelled before we start, exit early
     if check_if_job_is_cancelled(job_id.as_deref()) {
-        emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
-        if let Some(ref job) = job_id { acknowledge_cancel(job); }
+        cancel_this_job(job_id.as_deref());
         return Err(HttpResponse::Ok().body("cancelled"));
     }
 
@@ -2292,9 +2300,7 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
         for url in manifest.distribution_point_base_urls.iter() {
             // Check if job has been requested to cancel
             if check_if_job_is_cancelled(job_id.as_deref()) {
-                // If requested to cancel, cancel job
-                emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
-                if let Some(ref j) = job_id { acknowledge_cancel(j); }
+                cancel_this_job(job_id.as_deref());
                 return Err(HttpResponse::Ok().body("cancelled"));
             }
 
@@ -2338,8 +2344,7 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
                             if let Err(err) = fs::remove_dir_all(&download_directory_full_path) {
                                 eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", download_directory_full_path.display(), err);
                             }
-                            utils::emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
-                            if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
+                            cancel_this_job(job_id.as_deref());
                             return Err(HttpResponse::Ok().body("cancelled"));
                         }
 
@@ -2361,7 +2366,6 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
                             if let Err(err) = fs::remove_dir_all(&download_directory_full_path) {
                                 eprintln!("Cleanup warning: failed to remove incomplete asset folder {}: {:?}", download_directory_full_path.display(), err);
                             }
-                            utils::emit_event(job_id.as_deref(), models::Phase::Cancelled, "Job cancelled", None, None);
                             if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
                             return Err(HttpResponse::Ok().body("cancelled"));
                         }

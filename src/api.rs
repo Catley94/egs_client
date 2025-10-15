@@ -1213,9 +1213,9 @@ pub async fn set_paths_config(body: web::Json<models::PathsUpdate>) -> HttpRespo
 #[post("/cancel-job")]
 pub async fn cancel_job_endpoint(query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
-    if let Some(jid) = job_id {
-        utils::cancel_job(&jid);
-        utils::emit_event(Some(&jid), models::Phase::Cancelled, "Job cancelled", None, None);
+    if let Some(_job_id) = job_id {
+        utils::cancel_job(&_job_id);
+        utils::emit_event(Some(&_job_id), models::Phase::Cancelled, "Job cancelled", None, None);
         return HttpResponse::Ok().json(serde_json::json!({"ok": true, "message": "cancelled"}));
     }
     HttpResponse::BadRequest().body("missing jobId")
