@@ -269,7 +269,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
         join.spawn(async move {
             let _permit = permit_owner; // hold until task end
             let file_no = file_index + 1;
-            println!("Downloading file {}/{}: {}", file_no, total_files, filename);
+            // println!("Downloading file {}/{}: {}", file_no, total_files, filename);
             io::stdout().flush().ok();
             // Total bytes for this file (sum of chunk parts)
             let file_total_bytes: u64 = file.file_chunk_parts.iter().map(|p| p.size as u64).sum();
@@ -307,18 +307,18 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                 if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
                 // Also emit a detailed progress event so UI can show bytes
-                utils::emit_event(
-                    job_id_owned.as_deref(),
-                    models::Phase::DownloadProgress,
-                    format!("{} / {}", done, total_files),
-                    Some(((done as f64) / (total_files as f64) * 100.0) as f32),
-                    Some(serde_json::json!({
-                        "downloaded_files": done,
-                        "total_files": total_files,
-                        "bytes_done": cur,
-                        "total_bytes": _total_bytes_all,
-                    })),
-                );
+                // utils::emit_event(
+                //     job_id_owned.as_deref(),
+                //     models::Phase::DownloadProgress,
+                //     format!("download_asset: {} / {}", done, total_files),
+                //     Some(((done as f64) / (total_files as f64) * 100.0) as f32),
+                //     Some(serde_json::json!({
+                //         "downloaded_files": done,
+                //         "total_files": total_files,
+                //         "bytes_done": cur,
+                //         "total_bytes": _total_bytes_all,
+                //     })),
+                // );
                 return Ok(());
             }
 
@@ -334,7 +334,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                 utils::emit_event(
                     job_id_owned.as_deref(),
                     models::Phase::DownloadProgress,
-                    format!("{} / {}", done, total_files),
+                    format!("download_asset#2:{} / {}", done, total_files),
                     Some(((done as f64) / (total_files as f64) * 100.0) as f32),
                     Some(serde_json::json!({
                         "downloaded_files": done,
@@ -373,12 +373,12 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     }
                     let chunk_path = temp_dir.join(format!("{}.chunk", guid));
                     if chunk_path.exists() {
-                        print!("\r  chunks: {}/{} ({}%) - using cached chunk    ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+                        // print!("\r  chunks: {}/{} ({}%) - using cached chunk    ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
                         io::stdout().flush().ok();
                         return Ok(());
                     }
 
-                    print!("\r  chunks: {}/{} ({}%) - downloading...        ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
+                    // print!("\r  chunks: {}/{} ({}%) - downloading...        ", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100));
                     io::stdout().flush().ok();
 
                     let link = link.as_ref().ok_or_else(|| anyhow::anyhow!("missing signed chunk link for {}", guid))?;
@@ -432,7 +432,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                             utils::emit_event(
                                 job_id_inner.as_deref(),
                                 models::Phase::DownloadProgress,
-                                format!("{} / {}", done_files, total_files),
+                                format!("download_asset#3:{} / {}", done_files, total_files),
                                 Some(_percentage),
                                 Some(serde_json::json!({
                                     "downloaded_files": done_files,
@@ -457,7 +457,7 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                     return Err(anyhow::anyhow!("cancelled"));
                 }
             }
-            println!("\r  chunks: {}/{} (100%) - done                    ", total_chunks, total_chunks);
+            // println!("\r  chunks: {}/{} (100%) - done                    ", total_chunks, total_chunks);
 
             // Cancel before assembling
             if utils::check_if_job_is_cancelled(job_id_owned.as_deref()) {
@@ -497,10 +497,10 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
                 let total_chunks = file.file_chunk_parts.len();
                 let mb_done = (written as f64) / (1024.0 * 1024.0);
                 let mb_total = (total_bytes as f64) / (1024.0 * 1024.0);
-                print!("\r  assembling: {}/{} ({}%)  [{:.2} / {:.2} MB]", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100), mb_done, mb_total);
+                // print!("\r  assembling: {}/{} ({}%)  [{:.2} / {:.2} MB]", chunk_idx + 1, total_chunks, ((chunk_idx + 1) * 100 / total_chunks).min(100), mb_done, mb_total);
                 io::stdout().flush().ok();
             }
-            println!("\r  assembling: {}/{} (100%)  [{:.2} / {:.2} MB] - done", file.file_chunk_parts.len(), file.file_chunk_parts.len(), (total_bytes as f64)/(1024.0*1024.0), (total_bytes as f64)/(1024.0*1024.0));
+            // println!("\r  assembling: {}/{} (100%)  [{:.2} / {:.2} MB] - done", file.file_chunk_parts.len(), file.file_chunk_parts.len(), (total_bytes as f64)/(1024.0*1024.0), (total_bytes as f64)/(1024.0*1024.0));
 
             if !file.file_hash.is_empty() {
                 let got = hasher.finalize();
@@ -515,18 +515,18 @@ pub async fn download_asset(dm: &DownloadManifest, _base_url: &str, download_dir
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             if let Some(cb) = &progress { let pct = (((done as f64) / (total_files as f64)) * 100.0).floor() as u32; (cb)(pct.min(100), format!("{} / {}", done, total_files)); }
             // Emit a detailed progress event on file completion as well
-            utils::emit_event(
-                job_id_owned.as_deref(),
-                models::Phase::DownloadProgress,
-                format!("{} / {}", done, total_files),
-                Some(((done as f64) / (total_files as f64) * 100.0) as f32),
-                Some(serde_json::json!({
-                    "downloaded_files": done,
-                    "total_files": total_files,
-                    "bytes_done": bytes_done.load(std::sync::atomic::Ordering::SeqCst),
-                    "total_bytes": _total_bytes_all,
-                })),
-            );
+            // utils::emit_event(
+            //     job_id_owned.as_deref(),
+            //     models::Phase::DownloadProgress,
+            //     format!("download_asset#4:{} / {}", done, total_files),
+            //     Some(((done as f64) / (total_files as f64) * 100.0) as f32),
+            //     Some(serde_json::json!({
+            //         "downloaded_files": done,
+            //         "total_files": total_files,
+            //         "bytes_done": bytes_done.load(std::sync::atomic::Ordering::SeqCst),
+            //         "total_bytes": _total_bytes_all,
+            //     })),
+            // );
             Ok(())
         });
     }
@@ -1483,6 +1483,23 @@ pub async fn handle_fab_download(
         _ => return None,
     };
 
+    println!("¬ handle_fab_download");
+
+    // Fast-path: if caller provided an asset_name and the files are already downloaded
+    // for the requested UE version (if any), skip download entirely and proceed with creation.
+    if let Some(ref asset_name) = req.asset_name {
+        let downloads_base = find_downloads_directory();
+        let asset_dir = find_asset_directory(&downloads_base, asset_name);
+        if !needs_download(&asset_dir, &req.ue) {
+            println!(
+                "handle_fab_download: Skipping download for '{}' (UE {:?}) — files already present.",
+                asset_name,
+                req.ue
+            );
+            return None; // continue to project creation steps
+        }
+    }
+
     let mut q: HashMap<String, String> = HashMap::new();
     if let Some(ref j) = job_id {
         q.insert("jobId".to_string(), j.clone());
@@ -1498,15 +1515,26 @@ pub async fn handle_fab_download(
 
     match download_asset_handler(path, query).await {
         Err(err_response) => {
+            // If the download failed (non-2xx), bubble up the error response
             if !err_response.status().is_success() {
+                println!("¬ handle_fab_download => ERR download_asset_handler: error response: {:?}", err_response);
                 return Some(err_response);
             }
+            // A successful (200 OK) response in this Err branch indicates a cancelled job
             if utils::check_if_job_is_cancelled(job_id.as_deref()) {
                 cancel_this_job(job_id.as_deref());
                 return Some(HttpResponse::Ok().body("cancelled"));
             }
+            // Otherwise, continue to project creation
         }
-        Ok(response) => return Some(response),
+        Ok(response) => {
+            // If the download endpoint returned a non-success status, propagate it
+            if !response.status().is_success() {
+                println!("¬ handle_fab_download => Ok download_asset_handler: error response: {:?}", response);
+                return Some(response);
+            }
+            // On success, do not return early; continue to project creation
+        }
     }
 
     None
@@ -1743,21 +1771,41 @@ pub fn find_asset_directory(downloads_base: &Path, name: &str) -> PathBuf {
 }
 
 pub fn needs_download(asset_dir: &Path, ue_version: &Option<String>) -> bool {
-    if !asset_dir.exists() || !utils::is_download_complete(asset_dir) {
-        return true;
-    }
-
+    // If a specific UE major.minor is requested, only require that version folder to be complete.
     if let Some(ue) = ue_version {
         let ue_trimmed = ue.trim();
         if !ue_trimmed.is_empty() {
             let version_dir = asset_dir.join(ue_trimmed);
-            if !version_dir.exists() || !utils::is_download_complete(&version_dir) {
-                return true;
+            // If the specific version folder exists and is marked complete, no download needed.
+            if version_dir.exists() && utils::is_download_complete(&version_dir) {
+                return false;
+            }
+            // Otherwise, download is needed for this specific version.
+            return true;
+        }
+    }
+
+    // No specific version requested:
+    // If root is marked complete, no download needed (legacy layout support).
+    if asset_dir.exists() && utils::is_download_complete(asset_dir) {
+        return false;
+    }
+
+    // Consider any immediate child directory as a version folder; if any contains
+    // a completion marker, treat the asset as already downloaded.
+    if asset_dir.exists() && asset_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(asset_dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() && utils::is_download_complete(&p) {
+                    return false;
+                }
             }
         }
     }
 
-    false
+    // Otherwise, download is needed.
+    true
 }
 
 pub async fn download_template_asset(
@@ -1765,37 +1813,153 @@ pub async fn download_template_asset(
     ue_version: &Option<String>,
     job_id: Option<&str>,
 ) -> Result<PathBuf, HttpResponse> {
-    utils::emit_event(
+    // Ensure version-resolved, friendly folder and download using the same logic as identifier-based handler.
+    emit_event(
         job_id,
         models::Phase::CreateDownloading,
-        format!("Downloading '{}'", name),
+        format!("download_template_asset: Downloading '{}'", name),
         Some(0.0),
         None,
     );
 
-    match utils::ensure_asset_downloaded_by_name(name, job_id, models::Phase::CreateDownloading).await {
-        Ok(p) => {
-            utils::emit_event(
-                job_id,
-                models::Phase::CreateDownloading,
-                format!("Downloaded '{}'", name),
-                Some(100.0),
-                None,
-            );
-            Ok(p)
-        }
-        Err(err) => {
-            eprintln!("{}", err);
-            utils::emit_event(
-                job_id,
-                models::Phase::CreateError,
-                format!("Failed to download '{}'", name),
-                None,
-                None,
-            );
-            Err(HttpResponse::NotFound().body(format!("{}", err)))
+    // Authenticate with Epic services
+    let mut epic_services = create_epic_games_services();
+    if !try_cached_login(&mut epic_services).await {
+        epic_authenticate(&mut epic_services).await;
+    }
+
+    // Find asset by title (case-insensitive)
+    let account = match get_account_details(&mut epic_services).await {
+        Some(a) => a,
+        None => return Err(HttpResponse::BadRequest().body("Unable to get account details")),
+    };
+    let library = match get_fab_library_items(&mut epic_services, account).await {
+        Some(l) => l,
+        None => return Err(HttpResponse::BadRequest().body("Unable to fetch Fab library items")),
+    };
+    let asset_opt = library.results.iter().find(|a| a.title.eq_ignore_ascii_case(name));
+    let asset = match asset_opt {
+        Some(a) => a,
+        None => return Err(HttpResponse::NotFound().body(format!("Asset '{}' not found in your Fab library", name))),
+    };
+
+    // Select artifact based on requested UE major.minor when provided; otherwise pick highest supported.
+    let mut selected_artifact: Option<String> = None;
+    let mut selected_mm: Option<String> = None;
+    if let Some(mm) = ue_version.as_ref().and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t.to_string()) }
+    }) {
+        // Find a project_version whose engineVersions contains UE_<mm>
+        if let Some(pv) = asset.project_versions.iter().find(|pv| pv.engine_versions.iter().any(|ev| ev.trim() == format!("UE_{}", mm))) {
+            selected_artifact = Some(pv.artifact_id.clone());
+            selected_mm = Some(mm);
         }
     }
+    // If still not selected, choose the pv with the highest engine version token
+    if selected_artifact.is_none() {
+        let mut best: Option<(i32, i32, String, String)> = None; // (maj,min,mm,artifact)
+        for pv in asset.project_versions.iter() {
+            for ev in pv.engine_versions.iter() {
+                let token = ev.trim();
+                let v = if let Some(rest) = token.strip_prefix("UE_") { rest } else { token };
+                let parts: Vec<&str> = v.split('.').collect();
+                if !parts.is_empty() {
+                    let maj = parts[0].parse::<i32>().unwrap_or(0);
+                    let min = if parts.len() > 1 { parts[1].parse::<i32>().unwrap_or(0) } else { 0 };
+                    let mm = format!("{}.{}", maj, min);
+                    match &best {
+                        Some((bmaj, bmin, _, _)) => {
+                            if maj > *bmaj || (maj == *bmaj && min > *bmin) {
+                                best = Some((maj, min, mm.clone(), pv.artifact_id.clone()));
+                            }
+                        }
+                        None => best = Some((maj, min, mm.clone(), pv.artifact_id.clone())),
+                    }
+                }
+            }
+        }
+        if let Some((_, _, mm, art)) = best { selected_mm = Some(mm); selected_artifact = Some(art); }
+    }
+    let artifact_id = match selected_artifact {
+        Some(a) => a,
+        None => return Err(HttpResponse::BadRequest().body("Selected asset has no compatible project versions")),
+    };
+    // Namespace and asset_id for cache update
+    let namespace = asset.asset_namespace.clone();
+    let asset_id = asset.asset_id.clone();
+
+    // Fetch manifest(s) for the selected artifact and pick a distribution point
+    let manifest_res = epic_services.fab_asset_manifest(&artifact_id, &namespace, &asset_id, None).await;
+    let manifests = match manifest_res {
+        Ok(m) => m,
+        Err(e) => {
+            emit_event(job_id, models::Phase::CreateError, format!("Failed to fetch manifest: {:?}", e), None, None);
+            return Err(HttpResponse::BadRequest().body(format!("Failed to fetch manifest: {:?}", e)));
+        }
+    };
+
+    // Compute folder name and versioned path
+    let friendly_folder_name = get_friendly_folder_name(name.to_string());
+    let folder_name = friendly_folder_name.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
+    let mut out_root = get_default_downloads_dir_path().join(folder_name);
+
+    // Decide version subfolder: prefer provided selected_mm (derived or requested)
+    let mut version_to_use: Option<String> = selected_mm.clone();
+    if version_to_use.is_none() {
+        // Try to derive from manifests' associated engine versions if any (already attempted above)
+        if let Some(mm) = ue_version.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            version_to_use = Some(mm);
+        }
+    }
+    if let Some(ref mm) = version_to_use { out_root = out_root.join(mm); }
+
+    // Progress callback forwarding
+    let progress_callback: Option<ProgressFn> = job_id.map(|jid| {
+        let jid = jid.to_string();
+        let f: ProgressFn = std::sync::Arc::new(move |pct: u32, msg: String| {
+            emit_event(Some(&jid), models::Phase::DownloadProgress, format!("download_template_asset: {}", msg), Some(pct as f32), None);
+        });
+        f
+    });
+
+    for manifest in manifests.iter() {
+        for url in manifest.distribution_point_base_urls.iter() {
+            if check_if_job_is_cancelled(job_id) {
+                cancel_this_job(job_id);
+                return Err(HttpResponse::Ok().body("cancelled"));
+            }
+            if let Ok(mut dm) = epic_services.fab_download_manifest(manifest.clone(), url).await {
+                // Ensure SourceURL present
+                use std::collections::HashMap;
+                if let Some(ref mut fields) = dm.custom_fields {
+                    fields.insert("SourceURL".to_string(), url.clone());
+                } else {
+                    let mut map = HashMap::new();
+                    map.insert("SourceURL".to_string(), url.clone());
+                    dm.custom_fields = Some(map);
+                }
+                match download_asset(&dm, url.as_str(), &out_root, progress_callback.clone(), job_id).await {
+                    Ok(_) => {
+                        // On success, update FAB cache to mark this version as downloaded
+                        let fab_cache_file_path = get_fab_cache_file_path();
+                        let cache_version: Option<String> = version_to_use.clone();
+                        update_fab_cache_json(namespace.clone(), asset_id.clone(), artifact_id.clone(), cache_version, friendly_folder_name.clone(), &fab_cache_file_path);
+                        emit_event(job_id, models::Phase::DownloadComplete, "download_template_asset: Download complete", Some(100.0), None);
+                        if let Some(j) = job_id { acknowledge_cancel(j); }
+                        return Ok(out_root);
+                    }
+                    Err(e) => {
+                        eprintln!("Download failed from {}: {:?}", url, e);
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+
+    emit_event(job_id, models::Phase::DownloadError, "Unable to download asset from any distribution point", None, None);
+    Err(HttpResponse::InternalServerError().body("Unable to download asset from any distribution point"))
 }
 
 pub fn determine_search_dir(asset_dir: &Path, ue_version: &Option<String>) -> PathBuf {
@@ -1964,6 +2128,7 @@ pub fn copy_project_files(
     template_path: &Path,
     job_id: &Option<String>,
 ) -> Result<(usize, usize), HttpResponse> {
+    println!("¬ copy_project_files");
     let exclude_names = ["Binaries", "DerivedDataCache", "Intermediate", "Saved", ".git", ".svn", ".vs"];
 
     // Count total files to copy
@@ -1980,7 +2145,7 @@ pub fn copy_project_files(
     utils::emit_event(
         job_id.as_deref(),
         models::Phase::CreateCopying,
-        format!("Creating new project at {}", new_project_dir.to_string_lossy()),
+        format!("copy_project_files: Creating new project at {}", new_project_dir.to_string_lossy()),
         Some(0.0),
         None,
     );
@@ -2094,13 +2259,13 @@ fn perform_copy(
             if total_files > 0 {
                 let percent = ((copied as f64 / total_files as f64) * 100.0).floor() as u32;
                 if percent >= last_logged_percent + 5 || last_log_instant.elapsed().as_secs() >= 2 {
-                    println!("[copy-progress] {}/{} ({}%) - {}", copied, total_files, percent, rel.to_string_lossy());
+                    // println!("[copy-progress] {}/{} ({}%) - {}", copied, total_files, percent, rel.to_string_lossy());
                     last_logged_percent = percent;
                     last_log_instant = Instant::now();
                     utils::emit_event(
                         job_id.as_deref(),
                         models::Phase::CreateCopying,
-                        format!("{} / {}", copied, total_files),
+                        format!("perform_copy: {} / {}", copied, total_files),
                         Some(percent as f32),
                         None,
                     );
@@ -2262,7 +2427,7 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
     let (namespace, asset_id, artifact_id) = path.into_inner();
     let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
     let ue_major_minor_version = query.get("ue").cloned();
-
+    println!("¬ download_asset_handler");
     // If already cancelled before we start, exit early
     if check_if_job_is_cancelled(job_id.as_deref()) {
         cancel_this_job(job_id.as_deref());
@@ -2281,7 +2446,7 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
     emit_event(
         job_id.as_deref(),
         models::Phase::DownloadStart,
-        format!("Starting to download asset: {}", asset_name),
+        format!("download_asset_handler: Starting to download asset: {}", asset_name),
         Some(0.0),
         None);
 
@@ -2319,18 +2484,56 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
                 let folder_name = friendly_folder_name.clone().unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id));
 
                 let mut download_directory_full_path = get_default_downloads_dir_path().join(folder_name);
+                // Ensure we always download into a versioned subfolder when possible
+                let mut version_to_use: Option<String> = None;
                 if let Some(ref major_minor_version) = ue_major_minor_version {
-                    if major_minor_version.trim().is_empty() == false {
-                        // Create folder called specific version of asset
-                        download_directory_full_path = download_directory_full_path.join(major_minor_version.trim());
+                    if !major_minor_version.trim().is_empty() {
+                        version_to_use = Some(major_minor_version.trim().to_string());
                     }
+                }
+                // If no UE version provided, try to derive it from the Fab library metadata for this artifact
+                if version_to_use.is_none() {
+                    // Attempt to resolve highest major.minor from engineVersions associated with this artifact
+                    let mut best_mm: Option<(i32, i32, String)> = None;
+                    if let Some(details) = utils::get_account_details(&mut epic_services).await {
+                        if let Some(lib) = utils::get_fab_library_items(&mut epic_services, details).await {
+                            if let Some(asset) = lib.results.iter().find(|a| a.asset_namespace == namespace && a.asset_id == asset_id) {
+                                if let Some(pv) = asset.project_versions.iter().find(|pv| pv.artifact_id == artifact_id) {
+                                    for ev in pv.engine_versions.iter() {
+                                        let token = ev.trim();
+                                        let v = if let Some(rest) = token.strip_prefix("UE_") { rest } else { token };
+                                        let parts: Vec<&str> = v.split('.').collect();
+                                        if !parts.is_empty() {
+                                            let maj = parts[0].parse::<i32>().unwrap_or(0);
+                                            let min = if parts.len() > 1 { parts[1].parse::<i32>().unwrap_or(0) } else { 0 };
+                                            let mm = format!("{}.{}", maj, min);
+                                            match &best_mm {
+                                                Some((bmaj, bmin, _)) => {
+                                                    if maj > *bmaj || (maj == *bmaj && min > *bmin) {
+                                                        best_mm = Some((maj, min, mm));
+                                                    }
+                                                }
+                                                None => best_mm = Some((maj, min, mm)),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some((_, _, mm)) = best_mm { version_to_use = Some(mm); }
+                }
+                if let Some(ref mm) = version_to_use {
+                    // Create folder called specific version of asset
+                    println!("Creating folder with specific version asset: {}", mm);
+                    download_directory_full_path = download_directory_full_path.join(mm);
                 }
 
                 // Progress callback: forward file completion percentage over WS
                 let progress_callback: Option<ProgressFn> = job_id.as_deref().map(|jid| {
                     let jid = jid.to_string();
                     let f: ProgressFn = std::sync::Arc::new(move |percentage_complete: u32, msg: String| {
-                        emit_event(Some(&jid), models::Phase::DownloadProgress, format!("{}", msg), Some(percentage_complete as f32), None);
+                        emit_event(Some(&jid), models::Phase::DownloadProgress, format!("download_asset_handler: {}", msg), Some(percentage_complete as f32), None);
                     });
                     f
                 });
@@ -2352,9 +2555,10 @@ pub async fn download_asset_handler(path: web::Path<(String, String, String)>, q
                         // to mark this asset and specific version as downloaded, so the UI can
                         // reflect the state without requiring a full refresh.
                         let fab_cache_file_path = get_fab_cache_file_path();
-                        update_fab_cache_json(namespace, asset_id, artifact_id, ue_major_minor_version, friendly_folder_name, &fab_cache_file_path);
+                        let cache_version: Option<String> = version_to_use.clone().or(ue_major_minor_version.clone());
+                        update_fab_cache_json(namespace, asset_id, artifact_id, cache_version, friendly_folder_name, &fab_cache_file_path);
 
-                        emit_event(job_id.as_deref(), models::Phase::DownloadComplete, "Download complete", Some(100.0), None);
+                        emit_event(job_id.as_deref(), models::Phase::DownloadComplete, "download_asset_handler: Download complete", Some(100.0), None);
                         // TODO: Should we really acknowledge cancel if the download has completed?
                         if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
                         // TODO: The below was retuning an Err instead of Ok, should it be an Err?

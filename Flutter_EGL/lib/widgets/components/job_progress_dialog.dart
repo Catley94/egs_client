@@ -192,11 +192,12 @@ Future<void> showJobProgressOverlayDialog({
                 if (bytesDone != null && bytesTotal != null && bytesTotal > 0) {
                   final remaining = (bytesTotal - bytesDone).clamp(0, bytesTotal);
                   sizeText = '${fmtBytes(bytesDone)} / ${fmtBytes(bytesTotal)} (${fmtBytes(remaining)} left)';
-                } else if (bytesDone != null) {
-                  sizeText = fmtBytes(bytesDone);
-                } else {
-                  sizeText = '';
                 }
+                // else if (bytesDone != null) {
+                //   sizeText = fmtBytes(bytesDone);
+                // } else {
+                //   sizeText = '';
+                // }
               });
               // Update OS-level window/taskbar progress if available
               if (effective != null) {
@@ -218,13 +219,17 @@ Future<void> showJobProgressOverlayDialog({
                 }
                 return; // stop handling further for this event
               }
-              // Do not auto-close merely on reaching 100% progress; some jobs (e.g., download -> import)
-              // legitimately continue with additional phases after download completes.
-              // However, many backends emit a final user-friendly message like "Download complete" without a
-              // standardized phase. In that case, go ahead and close the dialog so the UI can proceed.
-              final isTerminalMessage = msgLower.contains('download complete') || msgLower.contains('download completed');
-              final isTerminalPhase = state == 'done' || state == 'completed' || state == 'cancel' || state == 'cancelled' || state.contains('download:complete') || state.contains('download_complete');
-              if (isTerminalPhase || isTerminalMessage) {
+              // Do not auto-close merely on reaching 100% progress or download completion; some jobs
+              // legitimately continue with additional phases (e.g., download -> import). Only close on
+              // explicit terminal phases such as import/create completion or explicit done/cancel.
+              final bool isTerminalPhase =
+                  state == 'done' ||
+                  state == 'completed' ||
+                  state == 'cancel' ||
+                  state == 'cancelled' ||
+                  state.contains('import:complete') ||
+                  state.contains('create:complete');
+              if (isTerminalPhase) {
                 try { await windowManager.setProgressBar(-1); } catch (_) {}
                 if (rootNav.canPop()) {
                   rootNav.pop();

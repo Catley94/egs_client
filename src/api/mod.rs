@@ -62,13 +62,19 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::collections::{HashMap, VecDeque};
 use actix_web::web::Query;
-use actix_web_actors::ws;
 use egs_api::EpicGames;
 use crate::utils::get_sender;
 
 /// Default directory names used when no config/environment override is provided.
 pub const DEFAULT_CACHE_DIR_NAME: &str = "cache";
 pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
+
+// Submodules exposing logically grouped endpoints. Re-export their public handlers so callers
+// can continue using `crate::api::...` without change.
+pub mod fab;
+pub mod ws;
+pub use fab::{get_fab_list, refresh_fab_list};
+pub use ws::{websocket_upgrade_endpoint, cancel_background_job_endpoint};
 
 /// Note: cache and downloads directories are configurable; see helpers below for effective paths.
 
@@ -98,43 +104,6 @@ pub const DEFAULT_DOWNLOADS_DIR_NAME: &str = "downloads";
 ///
 /// Status codes:
 /// - 200 OK on success (JSON body)
-#[get("/get-fab-list")]
-pub async fn get_fab_list() -> HttpResponse {
-    let path = utils::get_fab_cache_file_path();
-    if path.exists() {
-        if let Ok(mut f) = fs::File::open(&path) {
-            let mut buf = Vec::new();
-            if f.read_to_end(&mut buf).is_ok() {
-                // Try to parse and re-annotate downloaded flags based on current filesystem state.
-                match serde_json::from_slice::<serde_json::Value>(&buf) {
-                    Ok(mut val) => {
-                        let (_total, _marked, changed) = utils::annotate_downloaded_flags(&mut val);
-                        if changed {
-                            if let Ok(bytes) = serde_json::to_vec_pretty(&val) {
-                                if let Err(e) = fs::write(&path, &bytes) {
-                                    eprintln!("Warning: failed to update FAB cache while serving: {}", e);
-                                }
-                            }
-                            println!("Using cached FAB list from {} (re-annotated)", path.display());
-                        } else {
-                            println!("Using cached FAB list from {} (no changes)", path.display());
-                        }
-                        return HttpResponse::Ok().json(val);
-                    }
-                    Err(_) => {
-                        // If parsing failed, fall back to returning raw bytes.
-                        println!("Using cached FAB list from {} (raw)", path.display());
-                        return HttpResponse::Ok()
-                            .content_type("application/json")
-                            .body(buf);
-                    }
-                }
-            }
-        }
-    }
-    // Fallback: refresh and cache
-    utils::handle_refresh_fab_list().await
-}
 
 /// WebSocket endpoint used to stream progress/events to the Flutter UI.
 ///
@@ -144,14 +113,6 @@ pub async fn get_fab_list() -> HttpResponse {
 /// Behavior:
 /// - Subscribes client to a per-job broadcast channel.
 /// - Flushes buffered events for late subscribers, then streams live updates.
-#[get("/ws")]
-pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Query<HashMap<String, String>>) -> Result<HttpResponse, actix_web::Error> {
-    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned()).unwrap_or_else(|| "default".to_string());
-    println!("[WS] connect: job_id={}, peer={}", job_id, req.peer_addr().map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()));
-    let rx = get_sender(&job_id).subscribe();
-    let resp = ws::start(utils::WsSession { rx, job_id }, &req, stream);
-    resp
-}
 
 /// Forces a refresh of the user's Fab library from Epic Games Services and caches it.
 ///
@@ -169,11 +130,6 @@ pub async fn ws_endpoint(req: HttpRequest, stream: web::Payload, query: web::Que
 ///
 /// Example (curl):
 /// - curl -s http://localhost:8080/refresh-fab-list | jq '.results | length'
-#[get("/refresh-fab-list")]
-pub async fn refresh_fab_list() -> HttpResponse {
-    // Respond with the list of Fab Assets and cache it
-    utils::handle_refresh_fab_list().await
-}
 
 
 #[get("/auth/start")]
@@ -249,6 +205,7 @@ pub async fn auth_complete(body: web::Json<models::AuthCompleteRequest>) -> Http
 /// - curl -v http://localhost:8080/download-asset/89efe5924d3d467c839449ab6ab52e7f/28b7df0e7f5e4202be89a20d362860c3/Industryf4a3f3ff297fV1
 #[get("/download-asset/{namespace}/{asset_id}/{artifact_id}")]
 pub async fn download_asset(path: web::Path<(String, String, String)>, query: web::Query<HashMap<String, String>>) -> HttpResponse {
+    println!("¬ download_asset");
     match utils::download_asset_handler(path, query).await {
         Ok(value) => value,
         Err(value) => return value,
@@ -621,6 +578,7 @@ pub async fn open_unreal_project(query: web::Query<std::collections::HashMap<Str
 pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl Responder {
     let request_body = body.into_inner();
     let job_id = request_body.job_id.clone();
+    println!("¬ import_asset");
     utils::emit_event(job_id.as_deref(), models::Phase::ImportStart, format!("Importing '{}'", request_body.asset_name), Some(0.0), None);
 
     // Determine downloads base (same logic as create_unreal_project)
@@ -644,19 +602,14 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
         let path = web::Path::from((namespace.clone(), asset_id.clone(), artifact_id.clone()));
         let query: Query<HashMap<String, String>> = web::Query(q);
         match utils::download_asset_handler(path, query).await {
-            // Success/cancel paths in handler return Err(HttpResponse), inspect status
-            Err(resp) => {
+            // Handler returns Ok(HttpResponse) on successful download (200 OK),
+            // and Err(HttpResponse) on cancellation (200 OK "cancelled") or specific errors (4xx/5xx).
+            Ok(resp) => {
                 if !resp.status().is_success() {
-                    // Bubble up download error
+                    // Fatal failure (e.g., no distribution point succeeded) — bubble it up
                     return resp;
                 }
-                // If the job was cancelled, don't proceed to import
-                if utils::check_if_job_is_cancelled(job_id.as_deref()) {
-                    if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
-                    return HttpResponse::Ok().body("cancelled");
-                }
-                // Otherwise continue to import using the folder naming used by the downloader
-                // Compute the folder name the same way as download_asset_handler
+                // Success — proceed to import using the same folder naming as the downloader
                 let mut epic_services = utils::create_epic_games_services();
                 if !utils::try_cached_login(&mut epic_services).await {
                     utils::epic_authenticate(&mut epic_services).await;
@@ -666,21 +619,21 @@ pub async fn import_asset(body: web::Json<models::ImportAssetRequest>) -> impl R
                 let mut computed_asset_dir = downloads_base.join(title_folder.unwrap_or_else(|| format!("{}-{}-{}", namespace, asset_id, artifact_id)));
                 if let Some(ref ue) = request_body.ue { if !ue.trim().is_empty() { computed_asset_dir = computed_asset_dir.join(ue.trim()); } }
                 // Prefer computed dir; if missing, fallback to provided asset_name resolution below
-                // by storing this path for later if it exists
                 if computed_asset_dir.exists() {
-                    // Use this computed dir by setting a marker variable via shadowing later
-                    // We'll pass through to common import logic using this path
-                    // To do so, stash it in a mutable Option and use if present
-                    // We'll proceed after the general preflight below
-                    // Place into a thread-local compatible variable scope
-                    // Continue to common path with computed_asset_dir
-                    // To avoid duplication, jump to final copy section after preparing dest
-                    // But for clarity, we'll fall through and let the preflight use this path
+                    // Nothing to do here — asset_dir will be recomputed consistently below as well
                 }
             }
-            // Handler returns Ok(HttpResponse) only on fatal failure paths (e.g., all dist points failed)
-            Ok(resp) => {
-                return resp;
+            Err(resp) => {
+                if !resp.status().is_success() {
+                    // Download error — bubble it up
+                    return resp;
+                }
+                // Cancelled path returns 200 OK with body "cancelled" — do not proceed to import
+                if utils::check_if_job_is_cancelled(job_id.as_deref()) {
+                    if let Some(ref j) = job_id { utils::acknowledge_cancel(j); }
+                    return HttpResponse::Ok().body("cancelled");
+                }
+                // If somehow we reached here with a 200 from Err but not cancelled, treat as non-fatal and proceed.
             }
         }
     }
@@ -993,11 +946,17 @@ pub async fn set_unreal_project_version(body: web::Json<models::SetProjectEngine
 pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRequest>) -> impl Responder {
     let req = body.into_inner();
     let job_id = req.job_id.clone();
+    println!("¬ create_unreal_project");
+    println!("¬ req: {:?}", req);
+    println!("¬ job_id: {:?}", job_id);
+    println!("¬ asset_name: {:?}", req.asset_name);
 
-    utils::emit_event(job_id.as_deref(), models::Phase::CreateStart, format!("Creating project {}", req.project_name), None, None);
+
+    utils::emit_event(job_id.as_deref(), models::Phase::CreateStart, format!("create_unreal_project: Creating project {}", req.project_name), None, None);
 
     // Handle Fab asset download if identifiers are provided
     if let Some(response) = utils::handle_fab_download(&req, &job_id).await {
+        println!("¬ within the await for handle_fab_download");
         return response;
     }
 
@@ -1054,7 +1013,7 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
     utils::emit_event(
         job_id.as_deref(),
         models::Phase::CreateComplete,
-        format!("Project created at {}", new_project_dir.to_string_lossy()),
+        format!("create_unreal_project: Project created at {}", new_project_dir.to_string_lossy()),
         Some(100.0),
         None,
     );
@@ -1064,8 +1023,8 @@ pub async fn create_unreal_project(body: web::Json<models::CreateUnrealProjectRe
 
     // Build and optionally execute open command
     let command_preview = utils::build_editor_command(&editor_path, &target_uproject, &req.project_type);
-    println!("UnrealEditor: {}", editor_path.to_string_lossy());
-    println!("Open Command: {}", command_preview);
+    // println!("UnrealEditor: {}", editor_path.to_string_lossy());
+    // println!("Open Command: {}", command_preview);
 
     utils::execute_project_open(&req, copied_files, skipped_files, command_preview, &new_project_dir)
 }
@@ -1210,15 +1169,5 @@ pub async fn set_paths_config(body: web::Json<models::PathsUpdate>) -> HttpRespo
 }
 
 
-#[post("/cancel-job")]
-pub async fn cancel_job_endpoint(query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
-    let job_id = query.get("jobId").cloned().or_else(|| query.get("job_id").cloned());
-    if let Some(_job_id) = job_id {
-        utils::cancel_job(&_job_id);
-        utils::emit_event(Some(&_job_id), models::Phase::Cancelled, "Job cancelled", None, None);
-        return HttpResponse::Ok().json(serde_json::json!({"ok": true, "message": "cancelled"}));
-    }
-    HttpResponse::BadRequest().body("missing jobId")
-}
 
 

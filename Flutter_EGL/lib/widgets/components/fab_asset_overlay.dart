@@ -246,6 +246,7 @@ Future<void> showFabAssetOverlayDialog({
                                           enginePath: params.enginePath,
                                           templateProject: params.templateProject,
                                           assetName: params.assetName,
+                                          ue: (selectedVersion != null && selectedVersion!.isNotEmpty) ? selectedVersion : null,
                                           outputDir: params.outputDir,
                                           projectName: params.projectName,
                                           projectType: params.projectType,

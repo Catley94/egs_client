@@ -7,6 +7,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/unreal.dart';
 import '../models/fab.dart';
 
+part 'api/api_service_create_project.dart';
+part 'api/api_service_refresh_fab_asset.dart';
+part 'api/api_service_extras.dart';
+
 class UnauthenticatedException implements Exception {
   final String authUrl;
   final String? message;
@@ -56,7 +60,7 @@ class ApiService {
   /// On success returns a message from the backend; progress is streamed via WebSocket using jobId.
   Future<DownloadAssetResult> downloadAsset({required String namespace, required String assetId, required String artifactId, String? jobId, String? ueVersion}) async {
     final path = '/download-asset/${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(assetId)}/${Uri.encodeComponent(artifactId)}';
-
+    print("¬ downloadAsset");
     final query = <String, String>{};
     // Add jobId for Web Socket information
     if (jobId != null && jobId.isNotEmpty) query['jobId'] = jobId;
@@ -351,6 +355,7 @@ class ApiService {
     String? ue,
   }) async {
     final uri = _uri('/import-asset');
+    print("¬ importAsset");
     final payload = <String, dynamic>{
       'asset_name': assetName,
       'project': project,
@@ -569,131 +574,7 @@ class ImportAssetResult {
   }
 }
 
-class CreateProjectResult {
-  final bool ok;
-  final String message;
-  final String? command;
-  final String? projectPath;
-
-  CreateProjectResult({required this.ok, required this.message, this.command, this.projectPath});
-
-    // Backwards-compatible alias expected by some UI code
-    bool get success => ok;
-
-  factory CreateProjectResult.fromJson(Map<String, dynamic> json) {
-    return CreateProjectResult(
-      ok: json['ok'] as bool? ?? false,
-      message: json['message'] as String? ?? '',
-      command: json['command'] as String?,
-      projectPath: (json['project_path'] ?? json['projectPath']) as String?,
-    );
-  }
-}
-
-extension CreateUnrealProjectApi on ApiService {
-  Future<CreateProjectResult> createUnrealProject({
-    String? enginePath,
-    String? templateProject,
-    String? assetName,
-    String? ue,
-    String? namespace,
-    String? assetId,
-    String? artifactId,
-    required String outputDir,
-    required String projectName,
-    String projectType = 'bp',
-    bool dryRun = false,
-    String? jobId,
-  }) async {
-    final uri = _uri('/create-unreal-project');
-    final payload = <String, dynamic>{
-      'engine_path': enginePath,
-      'template_project': templateProject,
-      'asset_name': assetName,
-      if (ue != null && ue.isNotEmpty) 'ue': ue,
-      if (namespace != null && namespace.isNotEmpty) 'namespace': namespace,
-      if (assetId != null && assetId.isNotEmpty) 'asset_id': assetId,
-      if (artifactId != null && artifactId.isNotEmpty) 'artifact_id': artifactId,
-      'output_dir': outputDir,
-      'project_name': projectName,
-      'project_type': projectType,
-      'dry_run': dryRun,
-      if (jobId != null && jobId.isNotEmpty) 'job_id': jobId,
-    }..removeWhere((key, value) => value == null);
-
-    final res = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
-    );
-    final body = res.body;
-    if (res.statusCode != 200) {
-      try {
-        final data = jsonDecode(body) as Map<String, dynamic>;
-        final msg = data['message']?.toString() ?? body;
-        throw Exception('Create project failed: ${res.statusCode} $msg');
-      } catch (_) {
-        throw Exception('Create project failed: ${res.statusCode} $body');
-      }
-    }
-    try {
-      final data = jsonDecode(body) as Map<String, dynamic>;
-      return CreateProjectResult.fromJson(data);
-    } catch (_) {
-      return CreateProjectResult(ok: true, message: body.isNotEmpty ? body : 'OK', command: null, projectPath: null);
-    }
-  }
-}
 
 
-class RefreshFabAssetResult {
-  final bool success;
-  final String message;
-  final bool anyDownloaded;
-  RefreshFabAssetResult({required this.success, required this.message, required this.anyDownloaded});
-}
-
-extension RefreshFabAssetApi on ApiService {
-  Future<RefreshFabAssetResult> refreshFabAsset({required String assetNamespace, required String assetId}) async {
-    try {
-      // Refreshes the whole list currently
-      final list = await refreshFabList();
-      final asset = list.firstWhere(
-        (e) => e.assetNamespace == assetNamespace && e.assetId == assetId,
-        orElse: () => FabAsset(
-          title: '',
-          description: '',
-          assetId: assetId,
-          assetNamespace: assetNamespace,
-          source: 'fab',
-          url: null,
-          distributionMethod: '',
-          images: const [],
-          projectVersions: const [],
-          downloadedVersions: const [],
-        ),
-      );
-      final anyDownloaded = asset.anyDownloaded;
-      return RefreshFabAssetResult(success: true, message: '', anyDownloaded: anyDownloaded);
-    } catch (e) {
-      return RefreshFabAssetResult(success: false, message: e.toString(), anyDownloaded: false);
-    }
-  }
-}
 
 
-extension ApiServiceExtras on ApiService {
-  Future<String> getVersion() async {
-    final uri = _uri('/version');
-    final res = await http.get(uri);
-    if (res.statusCode != 200) {
-      throw Exception('Failed to fetch version: ${res.statusCode} ${res.body}');
-    }
-    try {
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final v = data['version']?.toString();
-      if (v != null && v.isNotEmpty) return v;
-    } catch (_) {}
-    return res.body.toString();
-  }
-}

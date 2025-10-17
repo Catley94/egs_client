@@ -1,71 +1,5 @@
 [
   {
-    "id": "TASK_1",
-    "priority": "LOW",
-    "tags": [],
-    "title": "UE unknown",
-    "description": "When using the import process some of the projects (especially one I just created by opening up Unreal and creating a blank project with UE 5.6.1, blank56) are shjowing up as UE unknown.",
-    "status": "TODO",
-    "date": {
-      "date": {
-        "year": 2025,
-        "month": 9,
-        "day": 29
-      },
-      "time": {
-        "hour": 13,
-        "minute": 27,
-        "second": 47,
-        "nano": 635787136
-      }
-    },
-    "isImported": false
-  },
-  {
-    "id": "TASK_3",
-    "priority": "LOW",
-    "tags": [],
-    "title": "Support version picking for creating projects",
-    "description": "Like the import asset flow, it will need to download a version of the asset, provide the user with a dropdown on the version they wish to create the project with, then that version will be passed on to the download asset flow. ",
-    "status": "TODO",
-    "date": {
-      "date": {
-        "year": 2025,
-        "month": 9,
-        "day": 29
-      },
-      "time": {
-        "hour": 13,
-        "minute": 28,
-        "second": 51,
-        "nano": 543006013
-      }
-    },
-    "isImported": false
-  },
-  {
-    "id": "TASK_10",
-    "priority": "LOW",
-    "tags": [],
-    "title": "Import warning - unknown project version",
-    "description": "When importing any asset now, the warning box shows up warning the user they are importing an asset into an unknown version. This was intended when importing a 5.6 asset into anything lower, such as 5.5, 4.X etc.",
-    "status": "TODO",
-    "date": {
-      "date": {
-        "year": 2025,
-        "month": 9,
-        "day": 29
-      },
-      "time": {
-        "hour": 13,
-        "minute": 30,
-        "second": 36,
-        "nano": 931868671
-      }
-    },
-    "isImported": false
-  },
-  {
     "id": "TASK_14",
     "priority": "LOW",
     "tags": [],
@@ -83,28 +17,6 @@
         "minute": 30,
         "second": 16,
         "nano": 739539098
-      }
-    },
-    "isImported": false
-  },
-  {
-    "id": "TASK_23",
-    "priority": "LOW",
-    "tags": [],
-    "title": "Add more pictures in fab asset overlay",
-    "description": "Somehow in Epic Asset Manager it displays all the images. Is this from the API or web scraping? Could we web scrape to get the images?",
-    "status": "TODO",
-    "date": {
-      "date": {
-        "year": 2025,
-        "month": 9,
-        "day": 29
-      },
-      "time": {
-        "hour": 22,
-        "minute": 57,
-        "second": 36,
-        "nano": 897467975
       }
     },
     "isImported": false

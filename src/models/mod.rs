@@ -120,7 +120,7 @@ pub struct ImportAssetResponse {
     pub elapsed_ms: u128,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct CreateUnrealProjectRequest {
     pub engine_path: Option<String>,
     /// Path to a template/sample .uproject OR a directory containing one. If omitted, provide asset_name.

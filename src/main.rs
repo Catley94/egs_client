@@ -291,7 +291,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::open_unreal_engine)
             .service(api::import_asset)
             .service(api::create_unreal_project)
-            .service(api::ws_endpoint)
+            .service(api::websocket_upgrade_endpoint)
             .service(api::get_paths_config)
             .service(api::set_paths_config)
             .service(api::auth_start)
